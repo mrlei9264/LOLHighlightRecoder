@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <Version>1.0.1</Version>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>LolHighlight.Desktop</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <ApplicationIcon>Assets\RiftReplay.ico</ApplicationIcon>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**;objfresh*/**</DefaultItemExcludes>
+    <BundledFfmpegRoot Condition="'$(BundledFfmpegRoot)' == ''">$(MSBuildProjectDirectory)\..\..\.runtime\ffmpeg</BundledFfmpegRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\LolHighlight.Recording\LolHighlight.Recording.csproj" />
+    <Content Include="Assets\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LolHighlight.Desktop.Tests" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(BundledFfmpegRoot)\bin\ffmpeg.exe')">
+    <Content Include="$(BundledFfmpegRoot)\bin\ffmpeg.exe;$(BundledFfmpegRoot)\bin\ffprobe.exe" Link="tools\ffmpeg\bin\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="$(BundledFfmpegRoot)\LICENSE;$(BundledFfmpegRoot)\README.txt;$(BundledFfmpegRoot)\SOURCE.json" Link="tools\ffmpeg\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="1.8.260803003" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="1.8.260804001" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
+  </ItemGroup>
+  <!-- Unpackaged WinUI builds generate these files but can omit them from dotnet publish. -->
+  <Target Name="CopyWinUIResourcesToPublish" AfterTargets="Publish" Condition="'$(WindowsPackageType)' == 'None'">
+    <Error Condition="!Exists('$(TargetDir)$(AssemblyName).pri') Or !Exists('$(TargetDir)MainWindow.xbf')"
+           Text="The WinUI build did not produce its resource index or compiled main window." />
+    <ItemGroup>
+      <_PublishedXbf Include="$(TargetDir)**\*.xbf" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_PublishedXbf)"
+          DestinationFiles="@(_PublishedXbf->'$(PublishDir)\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(TargetDir)$(AssemblyName).pri" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

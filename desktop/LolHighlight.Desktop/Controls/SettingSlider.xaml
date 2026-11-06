@@ -1,0 +1,23 @@
+<UserControl x:Class="LolHighlight.Desktop.Controls.SettingSlider"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Name="Root">
+    <StackPanel Spacing="4">
+        <Grid ColumnSpacing="8">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding Label, ElementName=Root}" FontSize="12" VerticalAlignment="Center"
+                       Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap"/>
+            <TextBlock x:Name="ValueText" Grid.Column="1" FontSize="13" FontWeight="SemiBold"
+                       Foreground="{StaticResource AccentLimeBrush}" VerticalAlignment="Center"/>
+        </Grid>
+        <Slider x:Name="ValueSlider" MinHeight="32" HorizontalAlignment="Stretch"
+                IsThumbToolTipEnabled="False" ValueChanged="Slider_ValueChanged"
+                PreviewKeyDown="Slider_KeyDown" AutomationProperties.Name="{Binding Label, ElementName=Root}"
+                AutomationProperties.HelpText="{Binding HelpText, ElementName=Root}"/>
+        <TextBlock x:Name="RangeText" TextWrapping="Wrap" FontSize="11" Foreground="{StaticResource TertiaryTextBrush}"/>
+        <TextBlock x:Name="LegacyValueText" FontSize="11" TextWrapping="Wrap" Visibility="Collapsed"
+                   Foreground="{StaticResource WarningBrush}"/>
+        <TextBlock Text="{Binding HelpText, ElementName=Root}" FontSize="11" TextWrapping="Wrap"
+                   Foreground="{StaticResource TertiaryTextBrush}"/>
+    </StackPanel>
+</UserControl>
