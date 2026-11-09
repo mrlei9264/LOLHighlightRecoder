@@ -6,6 +6,7 @@ namespace LolHighlight.Recording.Services;
 public interface IClipCoordinator
 {
     ClipWindow? ActiveWindow { get; }
+    string? LastExportWarning => null;
     void Trigger(HighlightTrigger item, PlayerIdentity player);
     Task<string?> TickAsync(double nowSeconds, bool force = false, CancellationToken cancellationToken = default);
     void Reset();
@@ -28,6 +29,7 @@ public sealed class ClipCoordinator : IClipCoordinator
     private double _committedEnd;
     private double _reservedEnd;
     private readonly HashSet<int> _seenEvents = new();
+    public string? LastExportWarning { get; private set; }
 
     public ClipWindow? ActiveWindow
     {
@@ -47,11 +49,9 @@ public sealed class ClipCoordinator : IClipCoordinator
 
     public void Trigger(HighlightTrigger item, PlayerIdentity player)
     {
-        var detectedAt = _clock.IsRunning
-            ? _clock.ToSessionSeconds(item.DetectedAt)
-            : Math.Max(0, item.EventTime);
-        var start = Math.Max(0, detectedAt - _config.PreRollSeconds);
-        var end = detectedAt + _config.PostRollSeconds;
+        var eventTime = TriggerTime(item);
+        var start = Math.Max(0, eventTime - _config.PreRollSeconds);
+        var end = eventTime + PostRoll;
 
         lock (_lock)
         {
@@ -108,7 +108,7 @@ public sealed class ClipCoordinator : IClipCoordinator
                 _activeWindow.StartedAt = exportEnd;
                 _activeWindow.IsContinuation = true;
                 _activeWindow.Triggers = _activeWindow.Triggers.Where(trigger =>
-                    _clock.ToSessionSeconds(trigger.DetectedAt) + _config.PostRollSeconds >= _activeWindow.StartedAt).ToList();
+                    TriggerTime(trigger) + PostRoll >= _activeWindow.StartedAt).ToList();
             }
             else
                 _activeWindow = null;
@@ -162,6 +162,11 @@ public sealed class ClipCoordinator : IClipCoordinator
         }
     }
 
+    private double PostRoll => Math.Max(_config.PostRollSeconds, 1d / Math.Max(1, _config.Fps));
+
+    private double TriggerTime(HighlightTrigger trigger) => trigger.RecordingSeconds ??
+        (_clock.IsRunning ? _clock.ToSessionSeconds(trigger.DetectedAt) : Math.Max(0, trigger.EventTime));
+
     private async Task<string> ExportClipAsync(ClipWindow window, CancellationToken cancellationToken)
     {
         var outputDirectory = _review?.OutputDirectory ?? _paths.ResolveOutputDirectory(_config.OutputDir);
@@ -176,13 +181,15 @@ public sealed class ClipCoordinator : IClipCoordinator
             ["continuation"] = window.IsContinuation,
             ["recorded_at"] = DateTime.UtcNow.ToString("O"),
             ["recording_started_at"] = _clock.StartedAtUtc.ToString("O"),
+            [VideoChapters.ExportMetadataKey] = window.Triggers
+                .Select(trigger => new RecordingChapter(TriggerTime(trigger), trigger.Kind)).ToArray(),
             ["triggers"] = window.Triggers.Select(trigger => new Dictionary<string, object>
             {
                 ["event_id"] = trigger.EventId,
                 ["kind"] = trigger.Kind,
                 ["label"] = trigger.Label,
                 ["event_time"] = trigger.EventTime,
-                ["session_seconds"] = _clock.ToSessionSeconds(trigger.DetectedAt),
+                ["session_seconds"] = TriggerTime(trigger),
                 ["detected_at"] = trigger.DetectedAt.ToUniversalTime().ToString("O")
             }).ToList(),
             ["player"] = new Dictionary<string, string>
@@ -198,23 +205,33 @@ public sealed class ClipCoordinator : IClipCoordinator
             }
         };
 
+        string? telemetryWarning = null;
         if (_config.EmbedTelemetryFooter && _telemetry?.Path is { } telemetryPath)
         {
-            _telemetry.Flush();
-            var telemetry = await Task.Run(() => TelemetryReader.ReadTelemetryWindow(telemetryPath,
-                _clock.StartedAtUtc.AddSeconds(window.StartedAt),
-                _clock.StartedAtUtc.AddSeconds(window.EndsAt), cancellationToken), cancellationToken);
-            metadata["telemetry"] = telemetry.Records;
-            metadata["telemetry_truncated"] = telemetry.Truncated;
-            metadata["_telemetry_archive"] = new TelemetryArchiveRequest(telemetryPath,
-                _clock.StartedAtUtc.AddSeconds(window.StartedAt), _clock.StartedAtUtc.AddSeconds(window.EndsAt));
+            try
+            {
+                _telemetry.Flush();
+                var start = _clock.StartedAtUtc.AddSeconds(window.StartedAt);
+                var end = _clock.StartedAtUtc.AddSeconds(window.EndsAt);
+                var telemetry = await Task.Run(() => TelemetryReader.ReadTelemetryWindow(telemetryPath, start, end,
+                    cancellationToken), cancellationToken);
+                metadata["telemetry"] = telemetry.Records;
+                metadata["telemetry_truncated"] = telemetry.Truncated;
+                metadata["_telemetry_archive"] = new TelemetryArchiveRequest(telemetryPath, start, end);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                telemetryWarning = $"高光录像已保存，无法读取原始对局数据：{error.Message}";
+            }
         }
 
-        return await _exportManager.ExportAsync(
+        var result = await _exportManager.ExportAsync(
             window.StartedAt,
             window.EndsAt,
             outputPath,
             metadata,
             cancellationToken);
+        LastExportWarning = _exportManager.LastExportWarning ?? telemetryWarning;
+        return result;
     }
 }

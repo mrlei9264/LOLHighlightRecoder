@@ -1,41 +1,127 @@
-<UserControl x:Class="LolHighlight.Desktop.Views.GradingPage" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:controls="using:LolHighlight.Desktop.Controls">
- <Grid Padding="20" ColumnSpacing="16">
-  <Grid.ColumnDefinitions><ColumnDefinition Width="72*"/><ColumnDefinition Width="28*"/></Grid.ColumnDefinitions>
-  <Grid RowSpacing="12"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-   <Grid Background="Black" CornerRadius="8">
-    <controls:MediaPreview x:Name="PreviewPlayer" ControlsBelowVideo="True" AutomationProperties.Name="实时调色视频"/>
-    <TextBlock x:Name="EmptyPreview" Text="选择录像" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource SecondaryTextBrush}" IsHitTestVisible="False"/>
-   </Grid>
-   <Grid Grid.Row="1" RowSpacing="10" ColumnSpacing="10">
-    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-    <ComboBox ItemsSource="{Binding Tones}" SelectedItem="{Binding SelectedTone,Mode=TwoWay}" HorizontalAlignment="Stretch" IsEnabled="{Binding CanChange}" AutomationProperties.Name="色调">
-     <ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal" Spacing="8"><Border Background="{Binding Swatch}" Width="14" Height="14" CornerRadius="3"/><TextBlock Text="{Binding Name}" FontSize="12"/></StackPanel></DataTemplate></ComboBox.ItemTemplate>
-    </ComboBox>
-    <Grid Grid.Column="1" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-     <Slider Value="{Binding Strength,Mode=TwoWay}" Minimum="0" Maximum="1" StepFrequency="0.01" IsEnabled="{Binding CanChange}" AutomationProperties.Name="调色强度" ToolTipService.ToolTip="{Binding StrengthText}"/>
-     <Button Grid.Column="1" Content="{Binding CompareLabel}" Command="{Binding OriginalCommand}" Padding="10,6"/>
+<UserControl x:Class="LolHighlight.Desktop.Views.GradingPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:LolHighlight.Desktop.Controls">
+    <Grid Padding="{StaticResource PagePadding}" RowSpacing="12" ColumnSpacing="14">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="72*" /><ColumnDefinition Width="28*" MinWidth="176" /></Grid.ColumnDefinitions>
+        <StackPanel Grid.ColumnSpan="2" Spacing="2">
+            <TextBlock Text="调色" Style="{StaticResource PageTitleTextStyle}" AutomationProperties.HeadingLevel="Level1" />
+            <TextBlock Text="预览色调，按同一套设置导出一条或多条录像。" Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap" />
+        </StackPanel>
+
+        <Grid Grid.Row="1" RowSpacing="10">
+            <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <Border Style="{StaticResource CardBorderStyle}">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <Grid Padding="12,5" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding SelectedSource.Name,TargetNullValue=调色预览,FallbackValue=调色预览}" Style="{StaticResource LabelTextStyle}"
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <Button Grid.Column="1" Content="{Binding CompareLabel}" Command="{Binding OriginalCommand}" IsEnabled="{Binding HasSource}" />
+                    </Grid>
+                    <Grid Grid.Row="1">
+                        <controls:MediaPreview x:Name="PreviewPlayer" ControlsBelowVideo="True" AutomationProperties.Name="实时调色播放器" />
+                        <StackPanel x:Name="EmptyPreview" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" IsHitTestVisible="False">
+                            <FontIcon Glyph="&#xE790;" FontSize="28" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="从右侧选择录像预览" Style="{StaticResource MetaTextStyle}" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
+            <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}" Padding="12,10">
+                <StackPanel Spacing="8">
+                    <Grid ColumnSpacing="14">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <ComboBox Header="色调" ItemsSource="{Binding Tones}" SelectedItem="{Binding SelectedTone,Mode=TwoWay}"
+                                  Style="{StaticResource SettingsComboBoxStyle}" IsEnabled="{Binding CanChange}">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Border Background="{Binding Swatch}" Width="14" Height="14" CornerRadius="3" />
+                                        <TextBlock Text="{Binding Name}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <Slider Grid.Column="1" Header="{Binding StrengthText}" Value="{Binding Strength,Mode=TwoWay}"
+                                Minimum="0" Maximum="1" StepFrequency="0.01" IsEnabled="{Binding CanChange}"
+                                AutomationProperties.Name="调色强度" />
+                    </Grid>
+                    <ProgressBar Value="{Binding Progress}" Maximum="100" AutomationProperties.Name="导出进度"
+                                 Visibility="{Binding IsBusy,Converter={StaticResource BoolToVisibilityConverter}}" />
+                    <Grid ColumnSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button Style="{StaticResource IconButtonStyle}" ToolTipService.ToolTip="导出设置" AutomationProperties.Name="导出设置">
+                            <FontIcon Glyph="&#xE713;" FontSize="15" />
+                            <Button.Flyout>
+                                <Flyout>
+                                    <StackPanel Spacing="10" Width="272">
+                                        <TextBlock Text="导出位置" Style="{StaticResource SectionTitleTextStyle}" />
+                                        <TextBlock Text="{Binding OutputDirectory}" TextWrapping="Wrap" Style="{StaticResource MetaTextStyle}" />
+                                        <Button Content="更改位置" Command="{Binding FolderCommand}" IsEnabled="{Binding CanChange}" />
+                                        <CheckBox IsChecked="{Binding AskExportLocation,Mode=TwoWay}" IsEnabled="{Binding CanChange}" Content="每次询问导出位置" />
+                                    </StackPanel>
+                                </Flyout>
+                            </Button.Flyout>
+                        </Button>
+                        <TextBlock Grid.Column="1" Text="{Binding Message}" Style="{StaticResource MetaTextStyle}" VerticalAlignment="Center"
+                                   TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding Message}"
+                                   AutomationProperties.LiveSetting="Polite" />
+                        <Button Grid.Column="2" Style="{StaticResource IconButtonStyle}" Command="{Binding RevealCommand}"
+                                Visibility="{Binding HasOutput,Converter={StaticResource BoolToVisibilityConverter}}"
+                                ToolTipService.ToolTip="查看成片" AutomationProperties.Name="查看成片">
+                            <FontIcon Glyph="&#xE838;" FontSize="15" />
+                        </Button>
+                        <Button Grid.Column="3" Content="取消" Command="{Binding CancelCommand}"
+                                Visibility="{Binding IsBusy,Converter={StaticResource BoolToVisibilityConverter}}" />
+                        <Button Grid.Column="4" Style="{StaticResource AccentButtonStyle}" Content="{Binding GenerateLabel}"
+                                Command="{Binding GenerateCommand}" IsEnabled="{Binding CanGenerate}" MinWidth="84" Height="34" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource CardBorderStyle}">
+            <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <Border Style="{StaticResource ListRowDividerStyle}" Padding="10,8">
+                    <Grid ColumnSpacing="4">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="源录像" Style="{StaticResource SectionTitleTextStyle}" />
+                            <TextBlock Text="{Binding SourceSummary}" Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Style="{StaticResource IconButtonStyle}" Command="{Binding RefreshCommand}"
+                                IsEnabled="{Binding CanChange}" ToolTipService.ToolTip="刷新录像" AutomationProperties.Name="刷新录像">
+                            <FontIcon Glyph="&#xE72C;" FontSize="15" />
+                        </Button>
+                    </Grid>
+                </Border>
+                <ListView Grid.Row="1" ItemsSource="{Binding Sources}" SelectedItem="{Binding SelectedSource,Mode=TwoWay}" SelectionMode="Single"
+                          IsEnabled="{Binding CanChange}" ItemContainerStyle="{StaticResource VideoListItemStyle}" AutomationProperties.Name="调色录像列表">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <Border Style="{StaticResource ListRowDividerStyle}">
+                                <Grid Padding="8" ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                    <CheckBox IsChecked="{Binding Included,Mode=TwoWay}" MinWidth="0" AutomationProperties.Name="{Binding Name}" />
+                                    <StackPanel Grid.Column="1" Spacing="3">
+                                        <TextBlock Text="{Binding Name}" Style="{StaticResource LabelTextStyle}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding TagText}" Style="{StaticResource MetaTextStyle}" TextTrimming="CharacterEllipsis"
+                                                   ToolTipService.ToolTip="{Binding TagText}" />
+                                        <TextBlock Text="{Binding Meta}" Style="{StaticResource MetaTextStyle}" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Grid>
+        </Border>
     </Grid>
-    <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding SelectedSource.Name}" FontSize="12" TextTrimming="CharacterEllipsis" Foreground="{StaticResource SecondaryTextBrush}"/>
-    <Grid Grid.Row="2" Grid.ColumnSpan="2" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-     <Button ToolTipService.ToolTip="导出设置" AutomationProperties.Name="导出设置"><FontIcon Glyph="&#xE713;" FontSize="15"/>
-      <Button.Flyout><Flyout><StackPanel Spacing="12" Width="280"><TextBlock Text="{Binding OutputDirectory}" TextWrapping="Wrap" FontSize="12"/><Button Content="更改位置" Command="{Binding FolderCommand}" IsEnabled="{Binding CanChange}"/><CheckBox IsChecked="{Binding AskExportLocation,Mode=TwoWay}" IsEnabled="{Binding CanChange}" Content="每次询问导出位置"/></StackPanel></Flyout></Button.Flyout>
-     </Button>
-     <TextBlock Grid.Column="1" Text="{Binding Message}" TextWrapping="Wrap" FontSize="11" VerticalAlignment="Center" Foreground="{StaticResource SecondaryTextBrush}"/>
-     <Button Grid.Column="2" Command="{Binding RevealCommand}" Visibility="{Binding HasOutput,Converter={StaticResource BoolToVisibilityConverter}}" ToolTipService.ToolTip="查看成片" AutomationProperties.Name="查看成片"><FontIcon Glyph="&#xE838;" FontSize="15"/></Button>
-     <Button Grid.Column="3" Content="取消" Command="{Binding CancelCommand}" Visibility="{Binding IsBusy,Converter={StaticResource BoolToVisibilityConverter}}"/>
-     <Button x:Name="GenerateButton" Grid.Column="4" Content="{Binding GenerateLabel}" Command="{Binding GenerateCommand}" IsEnabled="{Binding CanGenerate}" MinWidth="100" Padding="16,8" Foreground="White">
-      <Button.Template><ControlTemplate TargetType="Button"><Border Background="{TemplateBinding Background}" CornerRadius="5" Padding="{TemplateBinding Padding}"><ContentPresenter Content="{TemplateBinding Content}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></ControlTemplate></Button.Template>
-     </Button>
-    </Grid>
-   </Grid>
-  </Grid>
-  <Grid Grid.Column="1" RowSpacing="8"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-   <Grid><TextBlock Text="{Binding SourceSummary}" FontSize="12" VerticalAlignment="Center" Foreground="{StaticResource SecondaryTextBrush}"/><Button HorizontalAlignment="Right" Command="{Binding RefreshCommand}" ToolTipService.ToolTip="刷新录像" AutomationProperties.Name="刷新录像"><FontIcon Glyph="&#xE72C;" FontSize="15"/></Button></Grid>
-   <ListView Grid.Row="1" ItemsSource="{Binding Sources}" SelectedItem="{Binding SelectedSource,Mode=TwoWay}" SelectionMode="Single" AutomationProperties.Name="调色录像列表">
-    <ListView.ItemContainerStyle><Style TargetType="ListViewItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/></Style></ListView.ItemContainerStyle>
-    <ListView.ItemTemplate><DataTemplate><StackPanel Spacing="6" Padding="4,10"><TextBlock Text="{Binding Name}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding TagText}" FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource AccentLimeBrush}"/><TextBlock Text="{Binding Meta}" FontSize="10" TextTrimming="CharacterEllipsis" Foreground="{StaticResource TertiaryTextBrush}"/></StackPanel></DataTemplate></ListView.ItemTemplate>
-   </ListView>
-  </Grid>
- </Grid>
 </UserControl>

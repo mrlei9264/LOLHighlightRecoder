@@ -5,6 +5,8 @@ namespace LolHighlight.Desktop.Services;
 /// <summary>Decodes the existing recording stream to a silent, in-memory preview.</summary>
 internal sealed class LiveRecordingPreview
 {
+    public const int FramesPerSecond = 60;
+
     private readonly CancellationTokenSource _stop = new();
     private readonly RecordingPreviewTap.Subscription _subscription;
     private readonly Task _worker;
@@ -24,7 +26,7 @@ internal sealed class LiveRecordingPreview
             { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
             foreach (var argument in new[] { "-hide_banner", "-loglevel", "error", "-nostdin", "-threads", "2",
                 "-probesize", "1048576", "-analyzeduration", "1000000", "-fflags", "+discardcorrupt", "-f", "mpegts", "-i", "pipe:0",
-                "-map", "0:v:0", "-an", "-sn", "-dn", "-vf", "fps=10,scale=960:540:force_original_aspect_ratio=decrease",
+                "-map", "0:v:0", "-an", "-sn", "-dn", "-vf", $"fps={FramesPerSecond},scale=960:540:force_original_aspect_ratio=decrease",
                 "-threads", "2", "-c:v", "mjpeg", "-q:v", "5", "-fps_mode", "passthrough", "-flush_packets", "1", "-f", "image2pipe", "pipe:1" }) start.ArgumentList.Add(argument);
             token.ThrowIfCancellationRequested();
             using var process = Process.Start(start) ?? throw new IOException("无法启动录制预览。");

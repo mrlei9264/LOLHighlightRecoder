@@ -17,7 +17,6 @@ public sealed partial class MainWindow : Window
     private int _playerIndex;
     private LolHighlight.Desktop.Controls.MediaPreview? _fullScreenPlayer;
     private AppWindowPresenter? _previousPresenter;
-    private bool _navigationCollapsed;
     private LolHighlight.Desktop.Services.MatchReviewCoordinator? _matchReview;
 
     public MainWindow()
@@ -40,25 +39,40 @@ public sealed partial class MainWindow : Window
         _appWindow.Closing += AppWindow_Closing;
 
         ConfigureWindow(windowId);
-        try { _navigationCollapsed = System.Text.Json.JsonSerializer.Deserialize<bool>(File.ReadAllText(Path.Combine(App.GetService<AppPaths>().DataRoot, "navigation.json"))); }
+        try { Navigation.IsPaneOpen = !System.Text.Json.JsonSerializer.Deserialize<bool>(File.ReadAllText(NavigationPreferencesPath)); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) { }
-        UpdateNavigation();
-        RootGrid.KeyDown += (_, e) => { if (_fullScreenPlayer != null && !e.Handled) e.Handled = _fullScreenPlayer.HandleKey(e.Key); };
-        NavHome.IsChecked = true;
+        Navigation.PaneOpened += (_, _) => SaveNavigationPreference();
+        Navigation.PaneClosed += (_, _) => SaveNavigationPreference();
+        RootGrid.SizeChanged += (_, _) => ResizeFullScreenHost();
+        Navigation.SelectedItem = NavHome;
         _matchReview = new LolHighlight.Desktop.Services.MatchReviewCoordinator(this, App.GetService<MatchReviewStore>(), () =>
-        { LibraryPageControl.Refresh(); _ = GradingPageControl.ViewModel.RefreshAsync(); });
+        { LibraryPageControl.Refresh(); _ = GradingPageControl.ViewModel.RefreshAsync(); }, UpdatePendingReview);
+    }
+
+    private void ReviewPending_Click(object sender, RoutedEventArgs args) => ReviewPending();
+    private void ReviewDiscarded_Click(object sender, RoutedEventArgs args) => _matchReview?.ReviewDiscarded();
+
+    internal void ReviewPending() => _matchReview?.ReviewPending();
+
+    private void UpdatePendingReview(int count)
+    {
+        var label = count > 0 ? $"待确认 · {count} 场" : "待确认录像";
+        PendingReviewLabel.Text = label;
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(PendingReviewShortcut, label);
+        ToolTipService.SetToolTip(PendingReviewShortcut, label);
+        HomePageControl.SetPendingReviewCount(count);
     }
 
     private void ConfigureWindow(WindowId windowId)
     {
-        Title = "Rift Replay · 录制与调色";
+        Title = "Rift Replay";
         var icon = Path.Combine(AppContext.BaseDirectory, "Assets", "RiftReplay.ico");
         if (File.Exists(icon)) _appWindow.SetIcon(icon);
 
         var display = DisplayArea.GetFromWindowId(windowId, DisplayAreaFallback.Primary);
         var workArea = display.WorkArea;
-        var width = Math.Min(1500, workArea.Width);
-        var height = Math.Min(960, workArea.Height);
+        var width = Math.Min(1280, workArea.Width);
+        var height = Math.Min(720, workArea.Height);
         var x = workArea.X + Math.Max(0, (workArea.Width - width) / 2);
         var y = workArea.Y + Math.Max(0, (workArea.Height - height) / 2);
         _appWindow.MoveAndResize(new RectInt32(x, y, width, height));
@@ -69,8 +83,8 @@ public sealed partial class MainWindow : Window
             RootGrid.Loaded += (_, _) =>
             {
                 var scale = RootGrid.XamlRoot?.RasterizationScale ?? 1;
-                presenter.PreferredMinimumWidth = Math.Min((int)Math.Ceiling(760 * scale), workArea.Width);
-                presenter.PreferredMinimumHeight = Math.Min((int)Math.Ceiling(560 * scale), workArea.Height);
+                presenter.PreferredMinimumWidth = Math.Min((int)Math.Ceiling(760 * scale), width);
+                presenter.PreferredMinimumHeight = Math.Min((int)Math.Ceiling(560 * scale), height);
             };
         }
 
@@ -78,16 +92,14 @@ public sealed partial class MainWindow : Window
             return;
 
         var titleBar = _appWindow.TitleBar;
-        titleBar.BackgroundColor = HexColor("#0C0F12");
-        titleBar.ForegroundColor = HexColor("#F3F6F1");
-        titleBar.InactiveBackgroundColor = HexColor("#0C0F12");
-        titleBar.InactiveForegroundColor = HexColor("#6F7A74");
-        titleBar.ButtonBackgroundColor = HexColor("#0C0F12");
-        titleBar.ButtonForegroundColor = HexColor("#A7B0AA");
-        titleBar.ButtonHoverBackgroundColor = HexColor("#1D252B");
-        titleBar.ButtonHoverForegroundColor = HexColor("#F3F6F1");
-        titleBar.ButtonPressedBackgroundColor = HexColor("#171D22");
-        titleBar.ButtonPressedForegroundColor = HexColor("#F3F6F1");
+        titleBar.BackgroundColor = HexColor("#202020");
+        titleBar.ForegroundColor = HexColor("#F5F5F5");
+        titleBar.InactiveBackgroundColor = HexColor("#202020");
+        titleBar.InactiveForegroundColor = HexColor("#A0A0A0");
+        titleBar.ButtonBackgroundColor = HexColor("#202020");
+        titleBar.ButtonForegroundColor = HexColor("#F5F5F5");
+        titleBar.ButtonHoverBackgroundColor = HexColor("#333333");
+        titleBar.ButtonHoverForegroundColor = HexColor("#FFFFFF");
     }
 
     private async void AppWindow_Closing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -116,9 +128,9 @@ public sealed partial class MainWindow : Window
         Close();
     }
 
-    private void Navigation_Checked(object sender, RoutedEventArgs e)
+    private void Navigation_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
-        if (sender is not RadioButton { Tag: string page })
+        if (args.SelectedItem is not NavigationViewItem { Tag: string page })
             return;
 
         if (HomePageControl == null)
@@ -128,6 +140,7 @@ public sealed partial class MainWindow : Window
         LibraryPageControl.Visibility = page == "library" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPageControl.Visibility = page == "settings" ? Visibility.Visible : Visibility.Collapsed;
         GradingPageControl.Visibility = page == "grading" ? Visibility.Visible : Visibility.Collapsed;
+        RecordingShortcut.Visibility = page == "home" ? Visibility.Collapsed : Visibility.Visible;
 
         if (RootGrid.DataContext is MainViewModel viewModel)
             viewModel.CurrentPage = page;
@@ -137,33 +150,26 @@ public sealed partial class MainWindow : Window
         GradingPageControl.SetActive(page == "grading");
     }
 
-    public void OpenGrading(IEnumerable<string> sources)
+    public bool OpenGrading(IEnumerable<string> sources)
     {
+        if (GradingPageControl.ViewModel.IsBusy) return false;
         GradingPageControl.ViewModel.AddSources(sources);
-        NavGrading.IsChecked = true;
+        Navigation.SelectedItem = NavGrading;
+        return true;
     }
 
-    private void CollapseNavigation_Click(object sender, RoutedEventArgs e)
+    private static string NavigationPreferencesPath => Path.Combine(App.GetService<AppPaths>().DataRoot, "navigation.json");
+
+    private void SaveNavigationPreference()
     {
-        _navigationCollapsed = !_navigationCollapsed; UpdateNavigation();
+        if (Navigation.DisplayMode != NavigationViewDisplayMode.Expanded) return;
         try
         {
             var dataRoot = App.GetService<AppPaths>().DataRoot;
             Directory.CreateDirectory(dataRoot);
-            File.WriteAllText(Path.Combine(dataRoot, "navigation.json"), System.Text.Json.JsonSerializer.Serialize(_navigationCollapsed));
+            File.WriteAllText(NavigationPreferencesPath, System.Text.Json.JsonSerializer.Serialize(!Navigation.IsPaneOpen));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
-    }
-    private void UpdateNavigation()
-    {
-        SidebarColumn.MinWidth = _navigationCollapsed ? 64 : 168;
-        SidebarColumn.Width = new GridLength(_navigationCollapsed ? 64 : 13, _navigationCollapsed ? GridUnitType.Pixel : GridUnitType.Star);
-        var visibility = _navigationCollapsed ? Visibility.Collapsed : Visibility.Visible;
-        foreach (var element in new FrameworkElement[] { BrandCopy, HomeNavLabel, LibraryNavLabel, GradingNavLabel, SettingsNavLabel, RecordNavLabel, SidebarWorkStatus }) element.Visibility = visibility;
-        Grid.SetColumn(CollapseNavigation, _navigationCollapsed ? 0 : 1);
-        CollapseNavigation.HorizontalAlignment = _navigationCollapsed ? HorizontalAlignment.Center : HorizontalAlignment.Right;
-        Grid.SetColumnSpan(SidebarStatusDot, _navigationCollapsed ? 2 : 1);
-        SidebarStatusDot.HorizontalAlignment = HorizontalAlignment.Center;
     }
     private void RecordingToggle_Click(object sender, RoutedEventArgs e)
     {
@@ -175,10 +181,11 @@ public sealed partial class MainWindow : Window
     {
         if (_fullScreenPlayer != null)
         {
+            if (!ReferenceEquals(_fullScreenPlayer, player)) return;
             var previous = _fullScreenPlayer;
             FullScreenHost.Children.Remove(previous);
+            FullScreenPopup.IsOpen = false;
             _playerParent?.Children.Insert(Math.Min(_playerIndex, _playerParent.Children.Count), previous);
-            FullScreenHost.Visibility = Visibility.Collapsed;
             previous.IsFullScreen = false;
             _fullScreenPlayer = null;
             if (_previousPresenter != null) _appWindow.SetPresenter(_previousPresenter);
@@ -191,19 +198,24 @@ public sealed partial class MainWindow : Window
         _previousPresenter = _appWindow.Presenter;
         parent.Children.Remove(player);
         _fullScreenPlayer = player; player.IsFullScreen = true;
-        FullScreenHost.Children.Add(player); FullScreenHost.Visibility = Visibility.Visible;
+        FullScreenHost.Children.Add(player);
         _appWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
+        ResizeFullScreenHost();
+        FullScreenPopup.IsOpen = true;
         player.FocusPlayer();
+    }
+
+    private void ResizeFullScreenHost()
+    {
+        FullScreenHost.Width = RootGrid.ActualWidth;
+        FullScreenHost.Height = RootGrid.ActualHeight;
     }
 
     public void StartRecording()
     {
-        if (GradingPageControl.ViewModel.IsBusy) { GradingPageControl.ViewModel.ShowError("请先完成或取消调色，再开始录制。"); NavGrading.IsChecked = true; return; }
-        if (!SettingsPageControl.FlushAutoSave()) { NavSettings.IsChecked = true; return; }
+        if (!SettingsPageControl.FlushAutoSave()) { Navigation.SelectedItem = NavSettings; return; }
         if (RootGrid.DataContext is MainViewModel vm && vm.CanStart) vm.StartCommand.Execute(null);
     }
-    private void GlobalStart_Click(object sender, RoutedEventArgs e) => StartRecording();
-
     private static Windows.UI.Color HexColor(string hex) => Windows.UI.Color.FromArgb(
         255,
         Convert.ToByte(hex.Substring(1, 2), 16),

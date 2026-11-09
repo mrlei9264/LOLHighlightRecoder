@@ -3,7 +3,9 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Windows.Input;
+using LolHighlight.Desktop.Services;
 using LolHighlight.Recording.Infrastructure;
 using LolHighlight.Recording.Models;
 using LolHighlight.Recording.Services;
@@ -16,7 +18,9 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
     private readonly IMetadataFooterService _metadataFooterService;
     private readonly AppPaths _paths;
     private readonly AppConfig _config;
+    private readonly StorageQuotaManager _quota;
     private readonly List<VideoItem> _allVideos = new();
+    private Dictionary<string, string> _titles;
 
     private VideoItem? _selectedVideo;
     private string _searchQuery = "";
@@ -38,9 +42,10 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
     private int _detailsVersion;
     private Task _detailsTask = Task.CompletedTask;
     private readonly Dictionary<string, string[]> _events = new(StringComparer.OrdinalIgnoreCase);
-    private string _eventFilter = "all", _sort = "newest";
+    private string _eventFilter = "all", _sort = "newest", _datePreset = "all";
     private DateTimeOffset? _dateFrom, _dateTo;
-    private int _scanVersion;
+    private int _scanVersion, _fileVersion;
+    private bool _multiSelect, _updatingMarks;
     public DateTimeOffset LibraryDateMin { get; private set; } = DateTimeOffset.Now.Date;
     public DateTimeOffset LibraryDateMax { get; private set; } = DateTimeOffset.Now.Date;
 
@@ -48,23 +53,90 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
     {
         LibraryDateMin = _allVideos.Count == 0 ? DateTimeOffset.Now.Date : new DateTimeOffset(_allVideos.Min(v => v.CreatedAt).Date);
         LibraryDateMax = _allVideos.Count == 0 ? DateTimeOffset.Now.Date : new DateTimeOffset(_allVideos.Max(v => v.CreatedAt).Date);
-        _dateFrom = _dateFrom == null || _dateFrom < LibraryDateMin || _dateFrom > LibraryDateMax ? LibraryDateMin : _dateFrom;
-        _dateTo = _dateTo == null || _dateTo > LibraryDateMax || _dateTo < LibraryDateMin ? LibraryDateMax : _dateTo;
+        if (_datePreset == "all")
+        {
+            _dateFrom = _dateFrom == null || _dateFrom < LibraryDateMin || _dateFrom > LibraryDateMax ? LibraryDateMin : _dateFrom;
+            _dateTo = _dateTo == null || _dateTo > LibraryDateMax || _dateTo < LibraryDateMin ? LibraryDateMax : _dateTo;
+        }
+        else ApplyDatePreset();
         OnPropertyChanged(nameof(LibraryDateMin)); OnPropertyChanged(nameof(LibraryDateMax));
         OnPropertyChanged(nameof(DateFrom)); OnPropertyChanged(nameof(DateTo));
     }
 
     public IReadOnlyList<SettingsChoice<string>> EventFilterOptions { get; } =
-        new[] { new SettingsChoice<string>("all", "全部事件") }.Concat(RecordingEventCatalog.All.Select(e => new SettingsChoice<string>(e.Id, e.Label))).ToArray();
+        new[] { new SettingsChoice<string>("all", "全部事件"), new("full_game", "整局录像") }
+            .Concat(RecordingEventCatalog.All.Select(e => new SettingsChoice<string>(e.Id, e.Label))).ToArray();
     public IReadOnlyList<SettingsChoice<string>> SortOptions { get; } =
         [new("newest", "日期：从新到旧"), new("oldest", "日期：从旧到新"), new("event", "事件：多杀优先")];
+    public IReadOnlyList<SettingsChoice<string>> DatePresets { get; } =
+        [new("all", "全部日期"), new("today", "今天"), new("week", "最近 7 天")];
+    public string DatePreset
+    {
+        get => _datePreset;
+        set
+        {
+            if (value is not ("all" or "today" or "week") || _datePreset == value) return;
+            _datePreset = value;
+            ApplyDatePreset();
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(DateFrom));
+            OnPropertyChanged(nameof(DateTo));
+            ApplyFilter(SelectedVideo?.Path);
+        }
+    }
+
+    private void ApplyDatePreset()
+    {
+        var today = DateTime.Today;
+        _dateFrom = _datePreset switch
+        {
+            "today" => new DateTimeOffset(today),
+            "week" => new DateTimeOffset(today.AddDays(-6)),
+            _ => LibraryDateMin
+        };
+        _dateTo = _datePreset == "all" ? LibraryDateMax : new DateTimeOffset(today);
+    }
     public string EventFilter { get => _eventFilter; set { if (_eventFilter == value) return; _eventFilter = value; OnPropertyChanged(); ApplyFilter(SelectedVideo?.Path); } }
     public string SortOrder { get => _sort; set { if (_sort == value) return; _sort = value; OnPropertyChanged(); ApplyFilter(SelectedVideo?.Path); } }
     public DateTimeOffset? DateFrom { get => _dateFrom; set { _dateFrom = value; OnPropertyChanged(); ApplyFilter(SelectedVideo?.Path); } }
     public DateTimeOffset? DateTo { get => _dateTo; set { _dateTo = value; OnPropertyChanged(); ApplyFilter(SelectedVideo?.Path); } }
     public ObservableRangeCollection<LibraryVideoCard> Cards { get; } = new();
     public LibraryVideoCard? SelectedCard { get => Cards.FirstOrDefault(c => c.Video == SelectedVideo); set { if (value != null) SelectedVideo = value.Video; } }
-    public void ResetFilters() { _eventFilter = "all"; _sort = "newest"; _dateFrom = LibraryDateMin; _dateTo = LibraryDateMax; _searchQuery = ""; foreach (var p in new[] { nameof(EventFilter), nameof(SortOrder), nameof(DateFrom), nameof(DateTo), nameof(SearchQuery) }) OnPropertyChanged(p); ApplyFilter(SelectedVideo?.Path); }
+    public bool MultiSelect
+    {
+        get => _multiSelect;
+        set
+        {
+            if (_multiSelect == value) return;
+            _multiSelect = value;
+            foreach (var card in Cards) card.ShowSelection = value;
+            if (!value) MarkVisible(false);
+            OnPropertyChanged();
+        }
+    }
+    public int MarkedCount => Cards.Count(card => card.IsMarked);
+    public bool HasMarkedVideos => MarkedCount > 0;
+    public string SelectionText => $"已选 {MarkedCount} 个";
+    public void MarkVisible(bool marked)
+    {
+        _updatingMarks = true;
+        try
+        {
+            foreach (var card in Cards) card.IsMarked = marked;
+        }
+        finally { _updatingMarks = false; }
+        NotifySelection();
+    }
+    public void ResetFilters()
+    {
+        _eventFilter = _datePreset = "all";
+        _sort = "newest";
+        _searchQuery = "";
+        ApplyDatePreset();
+        foreach (var property in new[] { nameof(EventFilter), nameof(SortOrder), nameof(DatePreset), nameof(DateFrom), nameof(DateTo), nameof(SearchQuery) })
+            OnPropertyChanged(property);
+        ApplyFilter(SelectedVideo?.Path);
+    }
 
     public LibraryViewModel(
         IVideoScanner videoScanner,
@@ -76,11 +148,12 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
         _metadataFooterService = metadataFooterService;
         _paths = paths;
         _config = config;
+        _quota = new(paths);
+        _titles = LoadTitles();
 
         RefreshCommand = new AsyncRelayCommand(RefreshAsync);
         PlayCommand = new RelayCommand(PlaySelected);
         RevealCommand = new RelayCommand(RevealSelected);
-        DeleteCommand = new RelayCommand(DeleteSelected);
         ExportTelemetryCommand = new AsyncRelayCommand(ExportTelemetryAsync);
 
     }
@@ -132,7 +205,7 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
 
     public string CountText => _allVideos.Count == 0
         ? "暂无录像"
-        : string.IsNullOrWhiteSpace(SearchQuery)
+        : Videos.Count == _allVideos.Count
             ? $"{_allVideos.Count} 个片段"
             : $"{Videos.Count} / {_allVideos.Count} 个片段";
 
@@ -146,7 +219,6 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
     public ICommand RefreshCommand { get; }
     public ICommand PlayCommand { get; }
     public ICommand RevealCommand { get; }
-    public ICommand DeleteCommand { get; }
     public ICommand ExportTelemetryCommand { get; }
 
     private async Task ExportTelemetryAsync()
@@ -191,35 +263,48 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
 
     public async Task RefreshAsync()
     {
-        if (_disposed || IsRefreshing) return;
+        if (_disposed) return;
         IsRefreshing = true;
         var version = ++_scanVersion;
         OnPropertyChanged(nameof(EmptyText));
         var directory = _paths.ResolveOutputDirectory(_config.OutputDir);
         try
         {
-            var videos = await Task.Run(() => _videoScanner.ScanVideos(directory));
-            if (_disposed || directory != _paths.ResolveOutputDirectory(_config.OutputDir)) return;
-            var selectedPath = SelectedVideo?.Path;
-            _allVideos.Clear();
-            _allVideos.AddRange(videos);
-            UpdateDateRange();
-            ApplyFilter(selectedPath);
-            var indexed = await Task.Run(() => videos.ToDictionary(v => v.Path, v => ReadEventIds(v.Path), StringComparer.OrdinalIgnoreCase));
-            if (_disposed || version != _scanVersion) return;
-            foreach (var entry in indexed) _events[entry.Key] = entry.Value;
-            ApplyFilter(SelectedVideo?.Path);
-            await _detailsTask;
+            while (true)
+            {
+                var fileVersion = _fileVersion;
+                var (videos, indexed) = await Task.Run(() =>
+                {
+                    var items = _videoScanner.ScanVideos(directory);
+                    var events = items.ToDictionary(v => v.Path, v => VideoTags.ReadIds(_metadataFooterService, v.Path), StringComparer.OrdinalIgnoreCase);
+                    return (items, events);
+                });
+                if (_disposed || version != _scanVersion || directory != _paths.ResolveOutputDirectory(_config.OutputDir)) return;
+                if (fileVersion != _fileVersion) continue;
+                var selectedPath = SelectedVideo?.Path;
+                _allVideos.Clear();
+                _allVideos.AddRange(videos);
+                _events.Clear();
+                foreach (var entry in indexed) _events[entry.Key] = entry.Value;
+                UpdateDateRange();
+                ApplyFilter(selectedPath);
+                await _detailsTask;
+                break;
+            }
         }
-        catch (Exception error) { if (!_disposed) ShowStatus($"无法读取录像目录：{error.Message}", true); }
+        catch (Exception error) { if (!_disposed && version == _scanVersion) ShowStatus($"无法读取录像目录：{error.Message}", true); }
         finally
         {
-            IsRefreshing = false;
-            OnPropertyChanged(nameof(EmptyText));
+            if (version == _scanVersion)
+            {
+                IsRefreshing = false;
+                OnPropertyChanged(nameof(EmptyText));
+            }
         }
     }
 
     public void ReportPlaybackError(string message) => ShowStatus($"预览失败：{message}", true);
+    public void ReportGradingBusy() => ShowStatus("已有调色任务，请等待任务完成或先取消。", true);
 
     public void Dispose()
     {
@@ -233,34 +318,144 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
         StatusMessage = "";
     }
 
-    public void DeleteSelected()
-    {
-        var video = SelectedVideo;
-        if (video == null)
-            return;
+    internal bool DeleteToRecycleBin => _config.DeleteToRecycleBin;
 
+    internal HashSet<string> DeleteVideos(IEnumerable<VideoItem> videos, bool recycle)
+    {
+        var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var failures = new List<string>();
+        var deleted = 0;
+        foreach (var video in videos.DistinctBy(video => video.Path, StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                if (recycle) RecycleBin.MoveFile(video.Path);
+                else File.Delete(video.Path);
+                removed.Add(video.Path);
+                deleted++;
+            }
+            catch (Exception e) when (e is DirectoryNotFoundException or FileNotFoundException) { removed.Add(video.Path); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+            {
+                failures.Add($"{Path.GetFileName(video.Path)}：{e.Message}");
+            }
+        }
+        if (removed.Count > 0)
+        {
+            _fileVersion++;
+            _allVideos.RemoveAll(item => removed.Contains(item.Path));
+            foreach (var path in removed) _events.Remove(path);
+            var titles = new Dictionary<string, string>(_titles, StringComparer.OrdinalIgnoreCase);
+            var changed = false;
+            foreach (var path in removed) changed |= titles.Remove(path);
+            if (changed)
+            {
+                try { SaveTitles(titles); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { failures.Add($"无法清理已删除录像的库内标题：{e.Message}"); }
+            }
+            UpdateDateRange();
+            ApplyFilter(SelectedVideo?.Path);
+        }
+        var message = recycle ? $"已将 {deleted} 个录像移入回收站" : $"已永久删除 {deleted} 个录像";
+        if (removed.Count > deleted) message += $" · {removed.Count - deleted} 个文件已不存在";
+        if (failures.Count > 0) message += $" · {failures.Count} 项失败 · {failures[0]}";
+        ShowStatus(message, failures.Count > 0);
+        return removed;
+    }
+
+    public void RenameTitle(LibraryVideoCard card, string title)
+    {
+        var titles = new Dictionary<string, string>(_titles, StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(title)) titles.Remove(card.Path);
+        else titles[card.Path] = title.Trim();
         try
         {
-            if (File.Exists(video.Path))
-                File.Delete(video.Path);
+            SaveTitles(titles);
+            ApplyFilter(SelectedVideo?.Path);
+            ShowStatus("已更新库内标题", false);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            ShowStatus($"无法修改库内标题：{e.Message}", true);
+        }
+    }
 
-            _allVideos.RemoveAll(item => string.Equals(item.Path, video.Path, StringComparison.OrdinalIgnoreCase));
-            UpdateDateRange();
-            ApplyFilter(null);
-            ShowStatus("已删除该录像", false);
-        }
-        catch (IOException)
+    public string? RenameFile(LibraryVideoCard card, string newName)
+    {
+        var name = newName.Trim();
+        if (name.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) name = name[..^4];
+        if (name.Length == 0 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            name.EndsWith('.') || name.EndsWith(' ') || name.EndsWith(".part", StringComparison.OrdinalIgnoreCase))
         {
-            ShowStatus("录像正在被播放器占用，请先关闭播放器再删除。", true);
+            ShowStatus("请输入有效的录像文件名。", true);
+            return null;
         }
-        catch (UnauthorizedAccessException)
+        var destination = Path.Combine(Path.GetDirectoryName(card.Path)!, name + Path.GetExtension(card.Path));
+        if (destination == card.Path) return destination;
+        if (!string.Equals(card.Path, destination, StringComparison.OrdinalIgnoreCase) && File.Exists(destination))
         {
-            ShowStatus("没有权限删除该文件。", true);
+            ShowStatus("已有同名录像。", true);
+            return null;
         }
-        catch (Exception exception)
+
+        var renamed = card.Video with { Path = destination, Name = name };
+        var originalTitles = _titles;
+        try
         {
-            ShowStatus($"删除失败：{exception.Message}", true);
+            // Keep both mappings until the filesystem rename succeeds.
+            if (card.Title != renamed.DisplayName || _titles.ContainsKey(card.Path))
+            {
+                var staged = new Dictionary<string, string>(_titles, StringComparer.OrdinalIgnoreCase) { [destination] = card.Title };
+                SaveTitles(staged);
+            }
+            _quota.MoveVideo(card.Path, destination);
         }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or JsonException)
+        {
+            if (!ReferenceEquals(_titles, originalTitles))
+            {
+                try { SaveTitles(originalTitles); }
+                catch (Exception saveError) when (saveError is IOException or UnauthorizedAccessException) { }
+            }
+            ShowStatus($"无法修改文件名：{e.Message}", true);
+            return null;
+        }
+
+        _fileVersion++;
+        var index = _allVideos.FindIndex(video => string.Equals(video.Path, card.Path, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0) _allVideos[index] = renamed;
+        if (_events.Remove(card.Path, out var ids)) _events[destination] = ids;
+        var titles = new Dictionary<string, string>(_titles, StringComparer.OrdinalIgnoreCase);
+        string? cleanupError = null;
+        if (!string.Equals(card.Path, destination, StringComparison.OrdinalIgnoreCase) && titles.Remove(card.Path))
+        {
+            try { SaveTitles(titles); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { cleanupError = e.Message; }
+        }
+        ApplyFilter(destination);
+        ShowStatus(cleanupError == null ? "已修改文件名" : $"已修改文件名，旧标题索引清理失败：{cleanupError}", cleanupError != null);
+        return destination;
+    }
+
+    private string TitlesPath => Path.Combine(_paths.DataRoot, "library-titles.json");
+    private Dictionary<string, string> LoadTitles()
+    {
+        try
+        {
+            if (File.Exists(TitlesPath) && JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(TitlesPath)) is { } titles)
+                return new(titles, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { }
+        return new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void SaveTitles(Dictionary<string, string> titles)
+    {
+        Directory.CreateDirectory(_paths.DataRoot);
+        var temp = TitlesPath + ".tmp";
+        File.WriteAllText(temp, JsonSerializer.Serialize(titles));
+        File.Move(temp, TitlesPath, true);
+        _titles = titles;
     }
 
     private void ApplyFilter(string? selectedPath)
@@ -268,7 +463,8 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
         var query = SearchQuery.Trim();
         var filtered = _allVideos
             .Where(video => query.Length == 0 ||
-                            video.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                            Path.GetFileName(video.Path).Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                            TitleFor(video).Contains(query, StringComparison.OrdinalIgnoreCase) ||
                             video.Summary.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                             string.Join(' ', EventLabels(video.Path)).Contains(query, StringComparison.OrdinalIgnoreCase))
             .Where(v => EventFilter == "all" || (_events.TryGetValue(v.Path, out var ids) && ids.Contains(EventFilter)))
@@ -282,7 +478,16 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
         };
 
         Videos.ReplaceAll(ordered.ToList());
-        Cards.ReplaceAll(Videos.Select(v => new LibraryVideoCard(v, EventLabels(v.Path))).ToArray());
+        var marked = Cards.Where(card => card.IsMarked).Select(card => card.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var card in Cards) card.PropertyChanged -= CardChanged;
+        var cards = Videos.Select(CreateCard).ToArray();
+        foreach (var card in cards)
+        {
+            card.IsMarked = marked.Contains(card.Path);
+            card.PropertyChanged += CardChanged;
+        }
+        Cards.ReplaceAll(cards);
+        NotifySelection();
 
         HasVideos = Videos.Count > 0;
         OnPropertyChanged(nameof(CountText));
@@ -295,19 +500,26 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(SelectedCard));
     }
 
-    private string[] ReadEventIds(string path)
+    public LibraryVideoCard? FindCard(string path)
     {
-        try
-        {
-            var m = _metadataFooterService.ReadMetadataFooter(path);
-            return (m?.GetValueOrDefault("triggers") as IEnumerable<object> ?? Array.Empty<object>())
-                .OfType<Dictionary<string, object>>().Select(t => t.GetValueOrDefault("kind")?.ToString() ?? "")
-                .Where(t => t.Length > 0).Distinct().ToArray();
-        }
-        catch (Exception error) when (error is IOException or InvalidOperationException or System.Text.Json.JsonException or UnauthorizedAccessException) { return []; }
+        return Cards.FirstOrDefault(card => string.Equals(card.Path, path, StringComparison.OrdinalIgnoreCase)) ??
+            (_allVideos.FirstOrDefault(video => string.Equals(video.Path, path, StringComparison.OrdinalIgnoreCase)) is { } video ? CreateCard(video) : null);
     }
+
+    private string TitleFor(VideoItem video) => _titles.GetValueOrDefault(video.Path) ?? video.DisplayName;
+    private LibraryVideoCard CreateCard(VideoItem video) => new(video, EventLabels(video.Path), TitleFor(video)) { ShowSelection = MultiSelect };
+    private void CardChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!_updatingMarks && e.PropertyName == nameof(LibraryVideoCard.IsMarked)) NotifySelection();
+    }
+    private void NotifySelection()
+    {
+        OnPropertyChanged(nameof(SelectionText));
+        OnPropertyChanged(nameof(HasMarkedVideos));
+    }
+
     private string[] EventLabels(string path) => _events.TryGetValue(path, out var ids) && ids.Length > 0
-        ? ids.Select(id => RecordingEventCatalog.All.FirstOrDefault(e => e.Id == id)?.Label ?? id).ToArray() : ["无事件标签"];
+        ? ids.Select(VideoTags.Label).ToArray() : ["无事件标签"];
     private int EventPriority(string path) => !_events.TryGetValue(path, out var ids) ? 0 : ids.Select(id => id.StartsWith("multikill_") && int.TryParse(id.AsSpan(10), out var n) ? n * 10 : id == "kill" ? 5 : 1).DefaultIfEmpty(0).Max();
 
     private async Task LoadDetailsAsync(VideoItem? video)
@@ -488,10 +700,16 @@ public class LibraryViewModel : INotifyPropertyChanged, IDisposable
     }
 }
 
-public sealed record LibraryVideoCard(VideoItem Video, string[] Tags)
+public sealed class LibraryVideoCard(VideoItem video, string[] tags, string? title = null) : GradingObservable
 {
+    private bool _isMarked, _showSelection;
+    public VideoItem Video { get; } = video;
+    public string[] Tags { get; } = tags;
     public string Path => Video.Path;
-    public string Title => Video.DisplayName;
+    public string Title { get; } = title ?? video.DisplayName;
+    public string FileName => System.IO.Path.GetFileName(Path);
     public string Meta => $"{Video.MetaText} · {Video.SizeText}";
     public string TagText => string.Join("  ·  ", Tags.Take(4));
+    public bool IsMarked { get => _isMarked; set => Set(ref _isMarked, value); }
+    public bool ShowSelection { get => _showSelection; set => Set(ref _showSelection, value); }
 }

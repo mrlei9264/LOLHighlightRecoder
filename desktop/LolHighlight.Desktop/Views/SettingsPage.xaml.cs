@@ -14,6 +14,7 @@ public sealed partial class SettingsPage : UserControl
     public SettingsPage()
     {
         InitializeComponent();
+        Categories.SelectedIndex = 0;
         _vm = App.GetService<SettingsViewModel>();
         DataContext = _vm;
         _saveTimer = DispatcherQueue.CreateTimer();
@@ -48,7 +49,7 @@ public sealed partial class SettingsPage : UserControl
     }
     private void Category_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (Category0 == null) return;
+        if (Category0 == null || Categories.SelectedIndex < 0) return;
         var groups = new[] { Category0, Category1, Category2, Category3, Category4, Category5 };
         for (var i = 0; i < groups.Length; i++) groups[i].Visibility = Categories.SelectedIndex == i ? Visibility.Visible : Visibility.Collapsed;
         SettingsScroll.ChangeView(null, 0, null, disableAnimation: true);

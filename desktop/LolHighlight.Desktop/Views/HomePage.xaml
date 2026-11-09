@@ -1,97 +1,167 @@
-﻿<UserControl x:Class="LolHighlight.Desktop.Views.HomePage"
- xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
- xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
- <Grid Padding="24" ColumnSpacing="24" RowSpacing="12">
-  <Grid.ColumnDefinitions><ColumnDefinition Width="7*"/><ColumnDefinition Width="3*"/></Grid.ColumnDefinitions>
-  <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+<UserControl x:Class="LolHighlight.Desktop.Views.HomePage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Padding="{StaticResource PagePadding}" RowSpacing="14" ColumnSpacing="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="7*" />
+            <ColumnDefinition Width="3*" MinWidth="202" />
+        </Grid.ColumnDefinitions>
 
-  <Grid RowSpacing="18">
-   <Grid.RowDefinitions><RowDefinition Height="7*"/><RowDefinition Height="3*"/></Grid.RowDefinitions>
-   <Grid Background="#080808" CornerRadius="12">
-    <Image x:Name="RecordingImage" Stretch="Uniform" AutomationProperties.Name="当前录制画面"/>
-    <StackPanel x:Name="PreviewPlaceholder" Spacing="12" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="16" IsHitTestVisible="False">
-     <FontIcon Glyph="&#xE714;" FontFamily="Segoe Fluent Icons" FontSize="32" Foreground="{StaticResource TertiaryTextBrush}"/>
-     <TextBlock Text="{Binding StatusTitle}" FontSize="16" TextAlignment="Center" TextWrapping="Wrap"/>
-     <TextBlock x:Name="PreviewHint" Text="开始录制后显示采集画面" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextAlignment="Center" TextWrapping="Wrap"/>
-    </StackPanel>
-    <Border Background="#C0181818" CornerRadius="5" Padding="10,6" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" IsHitTestVisible="False">
-     <StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="7" Height="7" Fill="{Binding Status,Converter={StaticResource RecordingStatusToBrushConverter}}" VerticalAlignment="Center"/><TextBlock Text="{Binding StatusLabel}" FontSize="11"/></StackPanel>
-    </Border>
-    <TextBlock Text="录制预览" FontSize="11" Foreground="{StaticResource SecondaryTextBrush}" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="14" IsHitTestVisible="False"/>
-   </Grid>
+        <Grid Grid.ColumnSpan="2" ColumnSpacing="16">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel Spacing="5">
+                <TextBlock Text="录制" Style="{StaticResource MetaTextStyle}" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Ellipse Width="8" Height="8" VerticalAlignment="Center"
+                             Fill="{Binding Status,Converter={StaticResource RecordingStatusToBrushConverter}}" />
+                    <TextBlock Text="{Binding RecordingHeading}" Style="{StaticResource StatusHeadingTextStyle}"
+                               AutomationProperties.HeadingLevel="Level1" AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Text="{Binding RecordingDuration}" Style="{StaticResource LabelTextStyle}" VerticalAlignment="Center"
+                               Visibility="{Binding ShowRecordingDuration,Converter={StaticResource BoolToVisibilityConverter}}"
+                               AutomationProperties.Name="录制时长" />
+                </StackPanel>
+                <TextBlock Text="{Binding RecordingHint}" Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap"
+                           MaxLines="2" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding RecordingHint}" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <DropDownButton x:Name="GameLaunchButton" Content="启动游戏" Height="36" Padding="14,0">
+                    <DropDownButton.Flyout>
+                        <MenuFlyout>
+                            <MenuFlyoutItem Text="WeGame 启动" Click="StartWeGame_Click" />
+                            <MenuFlyoutItem Text="普通启动" Click="StartLeagueClient_Click" />
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem Text="选择客户端并启动…" Click="ChooseLeagueClient_Click" />
+                        </MenuFlyout>
+                    </DropDownButton.Flyout>
+                </DropDownButton>
+                <Grid>
+                    <Button x:Name="StartRecordingButton" Style="{StaticResource AccentButtonStyle}" Click="Start_Click"
+                            Height="36" Padding="14,0" IsEnabled="{Binding CanToggleRecording}"
+                            Visibility="{Binding IsStartVisible,Converter={StaticResource BoolToVisibilityConverter}}">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE7C8;" FontSize="14" />
+                            <TextBlock Text="开始监听" />
+                        </StackPanel>
+                    </Button>
+                    <Button Content="{Binding StopActionLabel}" Command="{Binding StopCommand}" Height="36" Padding="14,0"
+                            IsEnabled="{Binding CanToggleRecording}"
+                            Visibility="{Binding IsStopVisible,Converter={StaticResource BoolToVisibilityConverter}}" />
+                </Grid>
+            </StackPanel>
+        </Grid>
 
-   <Border Grid.Row="1" BorderBrush="{StaticResource CardStrokeBrush}" BorderThickness="0,1,0,0" Padding="0,18,0,0">
-    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
-     <Grid ColumnSpacing="20" RowSpacing="16">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-      <StackPanel Spacing="6"><TextBlock Text="采集画面" FontSize="11" Foreground="{StaticResource TertiaryTextBrush}"/><TextBlock Text="{Binding CaptureSummary}" FontSize="13" TextWrapping="Wrap"/></StackPanel>
-      <StackPanel Grid.Column="1" Spacing="6"><TextBlock Text="编码" FontSize="11" Foreground="{StaticResource TertiaryTextBrush}"/><TextBlock Text="{Binding EncoderSummary}" FontSize="13" TextWrapping="Wrap"/></StackPanel>
-      <StackPanel Grid.Row="1" Spacing="6"><TextBlock Text="声音" FontSize="11" Foreground="{StaticResource TertiaryTextBrush}"/><TextBlock Text="{Binding AudioSummary}" FontSize="13" TextWrapping="Wrap"/></StackPanel>
-      <StackPanel Grid.Row="1" Grid.Column="1" Spacing="6"><TextBlock Text="录制范围" FontSize="11" Foreground="{StaticResource TertiaryTextBrush}"/><TextBlock Text="{Binding ClipWindowSummary}" FontSize="13" TextWrapping="Wrap"/></StackPanel>
-     </Grid>
-    </ScrollViewer>
-   </Border>
-  </Grid>
+        <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}">
+            <Grid RowSpacing="12" Padding="{StaticResource PanelPadding}">
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <TextBlock Text="采集预览" Style="{StaticResource SectionTitleTextStyle}" />
+                <Grid Grid.Row="1" Background="{StaticResource PreviewSurfaceBrush}" CornerRadius="6">
+                    <Image x:Name="RecordingImage" Stretch="Uniform" AutomationProperties.Name="当前录制画面" />
+                    <StackPanel x:Name="PreviewPlaceholder" Spacing="8" Margin="12" IsHitTestVisible="False"
+                                HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <FontIcon Glyph="&#xE714;" FontSize="30" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="PreviewHint" Text="录制画面将在这里显示" Style="{StaticResource MetaTextStyle}"
+                                   TextAlignment="Center" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Grid>
+                <Grid Grid.Row="2" ColumnSpacing="12" RowSpacing="7">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <TextBlock Text="{Binding CaptureSummary}" Style="{StaticResource MetaTextStyle}" TextTrimming="CharacterEllipsis"
+                               AutomationProperties.Name="采集画面" ToolTipService.ToolTip="{Binding CaptureSummary}" />
+                    <TextBlock Grid.Column="1" Text="{Binding EncoderSummary}" Style="{StaticResource MetaTextStyle}" TextTrimming="CharacterEllipsis"
+                               AutomationProperties.Name="编码" ToolTipService.ToolTip="{Binding EncoderSummary}" />
+                    <TextBlock Grid.Row="1" Text="{Binding AudioSummary}" Style="{StaticResource MetaTextStyle}" TextTrimming="CharacterEllipsis"
+                               AutomationProperties.Name="声音配置" ToolTipService.ToolTip="{Binding AudioSummary}" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding ClipWindowSummary}" Style="{StaticResource MetaTextStyle}" TextTrimming="CharacterEllipsis"
+                               AutomationProperties.Name="录制范围" ToolTipService.ToolTip="{Binding ClipWindowSummary}" />
+                    <StackPanel Grid.Row="2" Spacing="2">
+                        <Grid ColumnSpacing="6">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="游戏音频" Style="{StaticResource MetaTextStyle}" />
+                            <TextBlock Grid.Column="1" Text="{Binding AudioState}" Style="{StaticResource MetaTextStyle}" />
+                        </Grid>
+                        <ProgressBar Maximum="100" Value="{Binding GameAudioLevel}" AutomationProperties.Name="游戏音频电平" />
+                    </StackPanel>
+                    <StackPanel Grid.Row="2" Grid.Column="1" Spacing="2">
+                        <Grid ColumnSpacing="6">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="麦克风" Style="{StaticResource MetaTextStyle}" />
+                            <TextBlock Grid.Column="1" Text="{Binding MicrophoneState}" Style="{StaticResource MetaTextStyle}" />
+                        </Grid>
+                        <ProgressBar Maximum="100" Value="{Binding MicrophoneLevel}" AutomationProperties.Name="麦克风电平" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+        </Border>
 
-  <Grid Grid.Column="1" RowSpacing="18">
-   <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-   <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
-   <StackPanel Spacing="18">
-   <StackPanel Spacing="12">
-    <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-     <TextBlock Text="当前对局" FontSize="11" Foreground="{StaticResource TertiaryTextBrush}" VerticalAlignment="Center"/>
-     <TextBlock Grid.Column="1" Text="{Binding FrameRate}" FontSize="11" Foreground="{StaticResource SecondaryTextBrush}"/>
+        <ScrollViewer Grid.Row="1" Grid.Column="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="12" Padding="0,0,4,0">
+                <InfoBar Title="待确认录像" x:Name="PendingReviewNotice" Severity="Informational" IsClosable="False">
+                    <InfoBar.ActionButton>
+                        <Button Content="查看" Click="ReviewPending_Click" />
+                    </InfoBar.ActionButton>
+                </InfoBar>
+                <InfoBar Title="磁盘空间不足" Message="{Binding DiskFree}" IsOpen="{Binding HasLowDiskSpace,Mode=OneWay}"
+                         Severity="Warning" IsClosable="False" />
+                <Border Style="{StaticResource QuietPanelStyle}">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="对局与缓存" Style="{StaticResource SectionTitleTextStyle}" />
+                        <TextBlock Text="{Binding PlayerName}" TextTrimming="CharacterEllipsis" />
+                        <ProgressBar Value="{Binding BufferPercent}" Maximum="100" AutomationProperties.Name="视频缓冲进度" />
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="{Binding BufferText}" Style="{StaticResource LabelTextStyle}" />
+                            <TextBlock Grid.Column="1" Text="{Binding MemoryBudget}" Style="{StaticResource MetaTextStyle}" VerticalAlignment="Center" />
+                        </Grid>
+                        <TextBlock Text="{Binding BufferCapacityText}" Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+                <Button Content="打开录像目录" Command="{Binding OpenOutputFolderCommand}" HorizontalAlignment="Stretch" />
+                <Expander Header="诊断" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="{Binding StatusDetail}" Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap" />
+                        <Grid RowSpacing="6" ColumnSpacing="12">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <TextBlock Text="CPU" Style="{StaticResource MetaTextStyle}" />
+                            <TextBlock Grid.Column="1" Text="{Binding CpuUsage}" HorizontalAlignment="Right" />
+                            <TextBlock Grid.Row="1" Text="内存" Style="{StaticResource MetaTextStyle}" />
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding MemoryUsage}" HorizontalAlignment="Right" />
+                            <TextBlock Grid.Row="2" Text="磁盘剩余" Style="{StaticResource MetaTextStyle}" />
+                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding DiskFree}" HorizontalAlignment="Right" />
+                            <TextBlock Grid.Row="3" Text="运行时长" Style="{StaticResource MetaTextStyle}" />
+                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Uptime}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <TextBlock Text="运行动态" Style="{StaticResource LabelTextStyle}" />
+                        <ListView MaxHeight="148" ItemsSource="{Binding StateChanges}" SelectionMode="None"
+                                  ItemContainerStyle="{StaticResource VideoListItemStyle}" AutomationProperties.Name="录制动态">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource ListRowDividerStyle}" Padding="0,7">
+                                        <StackPanel Spacing="2">
+                                            <Grid ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="1" Text="{Binding Time}" Style="{StaticResource MetaTextStyle}" />
+                                            </Grid>
+                                            <TextBlock Text="{Binding Title}" Style="{StaticResource MetaTextStyle}" TextWrapping="Wrap" MaxLines="2" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
+                </Expander>
+            </StackPanel>
+        </ScrollViewer>
+        <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Spacing="8">
+            <InfoBar x:Name="GameLaunchFeedback" Severity="Warning" IsOpen="False" />
+            <InfoBar IsOpen="{Binding HasWarning}" Message="{Binding WarningMessage}" Severity="Warning" IsClosable="False" />
+        </StackPanel>
     </Grid>
-    <TextBlock Text="{Binding PlayerName}" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-    <TextBlock Text="{Binding BufferText}" FontSize="24" FontWeight="SemiBold"/>
-    <ProgressBar Value="{Binding BufferPercent}" Maximum="100" AutomationProperties.Name="视频缓冲进度"/>
-    <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-     <TextBlock Text="{Binding BufferCapacityText}" FontSize="11" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap"/>
-     <TextBlock Grid.Column="1" Text="{Binding MemoryBudget}" FontSize="11" Foreground="{StaticResource SecondaryTextBrush}"/>
-    </Grid>
-   </StackPanel>
-
-   <Border BorderBrush="{StaticResource CardStrokeBrush}" BorderThickness="0,1,0,0" Padding="0,16,0,0">
-    <Grid RowSpacing="12" ColumnSpacing="12">
-     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-     <TextBlock Text="CPU" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}"/><TextBlock Grid.Column="1" Text="{Binding CpuUsage}" FontSize="12"/>
-     <TextBlock Grid.Row="1" Text="内存" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding MemoryUsage}" FontSize="12"/>
-     <TextBlock Grid.Row="2" Text="磁盘剩余" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding DiskFree}" FontSize="12"/>
-     <TextBlock Grid.Row="3" Text="运行时长" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Uptime}" FontSize="12"/>
-     <Button Grid.Row="4" Grid.ColumnSpan="2" Content="打开录像目录" Command="{Binding OpenOutputFolderCommand}" HorizontalAlignment="Stretch" FontSize="12" Padding="10,8"/>
-    </Grid>
-   </Border>
-
-   <Border BorderBrush="{StaticResource CardStrokeBrush}" BorderThickness="0,1,0,0" Padding="0,16,0,0">
-    <Grid RowSpacing="10"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-     <TextBlock Text="运行动态" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}"/>
-     <ListView Grid.Row="1" MaxHeight="180" ItemsSource="{Binding StateChanges}" SelectionMode="None" Background="Transparent" BorderThickness="0">
-      <ListView.ItemContainerStyle><Style TargetType="ListViewItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/></Style></ListView.ItemContainerStyle>
-      <ListView.ItemTemplate><DataTemplate><StackPanel Spacing="4" Padding="0,8">
-       <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-        <TextBlock Text="{Binding Status}" FontSize="12" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{Binding Time}" FontSize="10" Foreground="{StaticResource TertiaryTextBrush}"/>
-       </Grid>
-       <TextBlock Text="{Binding Title}" FontSize="11" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"/>
-      </StackPanel></DataTemplate></ListView.ItemTemplate>
-     </ListView>
-    </Grid>
-   </Border>
-   </StackPanel>
-   </ScrollViewer>
-   <StackPanel Grid.Row="1" Spacing="10">
-    <TextBlock Text="{Binding StatusDetail}" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding StatusDetail}"/>
-    <Button x:Name="StartRecordingButton" Content="开始录制" Click="Start_Click" HorizontalAlignment="Stretch" MinHeight="88"
-            Padding="10" CornerRadius="12" FontSize="24" Style="{StaticResource PrimaryActionButtonStyle}"
-            IsEnabled="{Binding CanToggleRecording}" Visibility="{Binding IsStartVisible,Converter={StaticResource BoolToVisibilityConverter}}"/>
-    <Button Content="停止并保存" Command="{Binding StopCommand}" HorizontalAlignment="Stretch" MinHeight="88"
-            Padding="10" CornerRadius="12" FontSize="20" Background="{StaticResource SurfaceRaisedBrush}"
-            BorderBrush="{StaticResource DangerBrush}" BorderThickness="1" IsEnabled="{Binding CanToggleRecording}"
-            Visibility="{Binding IsStopVisible,Converter={StaticResource BoolToVisibilityConverter}}"/>
-   </StackPanel>
-  </Grid>
-  <InfoBar Grid.Row="1" Grid.ColumnSpan="2" IsOpen="{Binding HasWarning}" Message="{Binding WarningMessage}" Severity="Warning" IsClosable="False"/>
- </Grid>
 </UserControl>
-

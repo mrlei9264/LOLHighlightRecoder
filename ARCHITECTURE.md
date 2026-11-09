@@ -29,7 +29,7 @@ LOL 窗口 + 游戏声音 / 麦克风 → FFmpeg → H.264 / AAC MPEG-TS
 - **事件高光**。`TransportStreamSegmenter` 在关键帧处切分 188 字节 TS 包流，补齐 PAT / PMT。`MemoryRingBuffer` 按时长和字节限制滚动淘汰旧段。`HighlightEvaluator` 匹配事件，`ClipCoordinator` 根据时钟建立前后保留窗口，合并相邻事件并在长高光中分段。`ExportManager` 将所需内存段送入 FFmpeg，用 `-c copy` 封装成 MP4。
 - **整局录制**。`ContinuousRecording` 将同一编码流送入另一个 FFmpeg，持续写入碎片 MP4。缓存只用于采集状态检查，整局长度由磁盘空间决定。录制中断后恢复会另建文件。
 
-两种模式都先写 `.part.mp4`，完成封装和元数据后改名。开启「对局结束后确认保存」时，成片先进入 `.pending/<对局编号>`。确认后，选中项移入录像目录，未选项删除；待确认项可在重启后继续处理。磁盘配额只管理已完成的 `highlight_*.mp4` 和 `fullgame_*.mp4`。
+两种模式都先写 `.part.mp4`，完成后改名。高光的对局数据附加失败时，回退到附加前的文件大小，保留可播放的视频。开启「对局结束后确认保存」时，成片先进入 `.pending/<对局编号>`。待确认项可稍后处理，重启后也会保留。保存所选后，未选项移入该对局的 `.discarded` 子目录，可从侧栏恢复到视频库或手动清理。磁盘配额只管理已完成的 `highlight_*.mp4` 和 `fullgame_*.mp4`。
 
 ### 遥测、预览与调色
 
@@ -38,6 +38,6 @@ LOL 窗口 + 游戏声音 / 麦克风 → FFmpeg → H.264 / AAC MPEG-TS
 
 ## 发布与存储
 
-`build.ps1` 下载并验证固定版本的 FFmpeg，发布自包含的 Windows x64 程序。相同的发布目录分别打成 WiX MSI 和免安装 ZIP。运行时通过 `FfmpegExecutable` 优先找到程序目录下的 `tools/ffmpeg/bin/ffmpeg.exe`，设置页可选择自定义程序。
+`build.cmd` 下载并验证固定版本的 FFmpeg，发布自包含的 Windows x64 程序。相同的发布目录分别打成 WiX MSI 和免安装 ZIP。运行时通过 `FfmpegExecutable` 优先找到程序目录下的 `tools/ffmpeg/bin/ffmpeg.exe`，设置页可选择自定义程序。
 
 `AppPaths` 统一解析可写目录。MSI 单独写入 `installed-mode` 标记，程序据此使用 `%LOCALAPPDATA%\RiftReplay`。免安装版使用 EXE 所在目录。两种方式都支持自定义录像目录，正在监听时暂存设置改动，停止后再应用。

@@ -52,8 +52,14 @@ public sealed class MatchReviewStore(AppConfig config, AppPaths paths)
     }
 
     public IReadOnlyList<MatchReviewBatch> Pending()
+        => Batches(discarded: false).Select(item => item.Batch).OrderBy(batch => batch.CreatedAt).ToArray();
+
+    public IReadOnlyList<(MatchReviewBatch Batch, int Count)> Discarded()
+        => Batches(discarded: true).OrderByDescending(item => item.Batch.CreatedAt).ToArray();
+
+    private IReadOnlyList<(MatchReviewBatch Batch, int Count)> Batches(bool discarded)
     {
-        var batches = new List<MatchReviewBatch>();
+        var batches = new List<(MatchReviewBatch Batch, int Count)>();
         string[] roots;
         lock (_gate) { LoadRoots(); roots = _roots.Append(Root).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(); }
         foreach (var root in roots)
@@ -69,13 +75,14 @@ public sealed class MatchReviewStore(AppConfig config, AppPaths paths)
                 if (batch == null || !Path.GetFullPath(folder).Equals(Path.GetFullPath(batch.Directory), StringComparison.OrdinalIgnoreCase)) continue;
                 lock (_gate) { if (_active?.Id == batch.Id) continue; }
                 if (!batch.Ready && IsAlive(batch.OwnerProcessId)) continue;
-                if (Files(batch).Count > 0) batches.Add(batch);
+                var count = (discarded ? DiscardedFiles(batch) : Files(batch)).Count;
+                if (count > 0) batches.Add((batch, count));
                 else Cleanup(batch);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { }
         }
         }
-        return batches.OrderBy(b => b.CreatedAt).ToArray();
+        return batches;
     }
 
     private void LoadRoots()
@@ -94,8 +101,19 @@ public sealed class MatchReviewStore(AppConfig config, AppPaths paths)
     public IReadOnlyList<string> Files(MatchReviewBatch batch)
     {
         Validate(batch);
-        if (!Directory.Exists(batch.Directory)) return [];
-        return Directory.EnumerateFiles(batch.Directory, "*.mp4")
+        return CompletedVideos(batch.Directory);
+    }
+
+    public IReadOnlyList<string> DiscardedFiles(MatchReviewBatch batch)
+    {
+        Validate(batch);
+        return CompletedVideos(DiscardDirectory(batch));
+    }
+
+    private static IReadOnlyList<string> CompletedVideos(string directory)
+    {
+        if (!Directory.Exists(directory)) return [];
+        return Directory.EnumerateFiles(directory, "*.mp4", new EnumerationOptions { AttributesToSkip = FileAttributes.ReparsePoint })
             .Where(f => !f.EndsWith(".part.mp4", StringComparison.OrdinalIgnoreCase))
             .Select(Path.GetFullPath)
             .OrderBy(File.GetLastWriteTimeUtc).ToArray();
@@ -107,16 +125,53 @@ public sealed class MatchReviewStore(AppConfig config, AppPaths paths)
         var files = Files(batch);
         var chosen = keep.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (chosen.Any(p => !files.Contains(p, StringComparer.OrdinalIgnoreCase))) throw new IOException("待保存录像已发生变化，请重新选择。");
-        Directory.CreateDirectory(batch.Destination);
+        var discarded = files.Where(file => !chosen.Contains(file)).ToArray();
+        var discardDirectory = DiscardDirectory(batch);
         // Move selected videos first. If a move fails, remaining candidates are retained for recovery.
         foreach (var file in files.Where(chosen.Contains))
-        {
-            var destination = Path.Combine(batch.Destination, Path.GetFileName(file));
-            if (File.Exists(destination)) destination = Path.Combine(batch.Destination, Path.GetFileNameWithoutExtension(file) + "_" + Guid.NewGuid().ToString("N")[..8] + ".mp4");
-            File.Move(file, destination, false);
-        }
-        foreach (var file in files.Where(f => !chosen.Contains(f))) File.Delete(file);
+            MoveVideo(file, batch.Destination);
+        foreach (var file in discarded)
+            MoveVideo(file, discardDirectory);
         Cleanup(batch);
+    }
+
+    public void RestoreDiscarded(MatchReviewBatch batch)
+    {
+        foreach (var file in DiscardedFiles(batch))
+            MoveVideo(file, batch.Destination);
+        Cleanup(batch);
+    }
+
+    public void PurgeDiscarded(MatchReviewBatch batch, IReadOnlyList<string> files)
+    {
+        var available = DiscardedFiles(batch).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (files.Any(file => !available.Contains(file)))
+            throw new IOException("已丢弃录像发生变化，请重新选择。");
+        foreach (var file in files)
+            File.Delete(file);
+        Cleanup(batch);
+    }
+
+    private static void MoveVideo(string file, string directory)
+    {
+        Directory.CreateDirectory(directory);
+        var destination = Path.Combine(directory, Path.GetFileName(file));
+        if (File.Exists(destination))
+            destination = Path.Combine(directory, Path.GetFileNameWithoutExtension(file) + "_" + Guid.NewGuid().ToString("N")[..8] + ".mp4");
+        File.Move(file, destination, overwrite: false);
+    }
+
+    private static string DiscardDirectory(MatchReviewBatch batch)
+    {
+        var directory = Path.Combine(batch.Directory, ".discarded");
+        CheckOwnedDirectory(directory);
+        return directory;
+    }
+
+    private static void CheckOwnedDirectory(string directory)
+    {
+        if (Directory.Exists(directory) && (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("待确认录像目录不能是重解析点。");
     }
 
     private static void Save(MatchReviewBatch batch)
@@ -130,12 +185,17 @@ public sealed class MatchReviewStore(AppConfig config, AppPaths paths)
         if (!Guid.TryParseExact(batch.Id, "N", out _) ||
             !Path.GetFullPath(batch.Directory).Equals(Path.GetFullPath(Path.Combine(batch.Destination, ".pending", batch.Id)), StringComparison.OrdinalIgnoreCase))
             throw new IOException("待确认录像目录无效。");
+        CheckOwnedDirectory(Path.Combine(batch.Destination, ".pending"));
+        CheckOwnedDirectory(batch.Directory);
     }
     private static void Cleanup(MatchReviewBatch batch)
     {
         Validate(batch);
         if (!Directory.Exists(batch.Directory)) return;
-        if (Directory.EnumerateFiles(batch.Directory).Any(p => !Path.GetFileName(p).Equals("batch.json", StringComparison.OrdinalIgnoreCase))) return;
+        var discarded = DiscardDirectory(batch);
+        if (Directory.Exists(discarded) && !Directory.EnumerateFileSystemEntries(discarded).Any())
+            Directory.Delete(discarded);
+        if (Directory.EnumerateFileSystemEntries(batch.Directory).Any(p => !Path.GetFileName(p).Equals("batch.json", StringComparison.OrdinalIgnoreCase))) return;
         File.Delete(Path.Combine(batch.Directory, "batch.json"));
         Directory.Delete(batch.Directory, false);
     }

@@ -13,8 +13,7 @@ public interface IColorGradingService
 }
 
 /// <summary>Only changes video colors: no timeline, effects, mixing, speed changes or overlays.</summary>
-public sealed class ColorGradingService(AppConfig config, AppPaths paths, IMetadataFooterService footer,
-    Func<bool>? recordingActive = null) : IColorGradingService, IDisposable
+public sealed class ColorGradingService(AppConfig config, AppPaths paths, IMetadataFooterService footer) : IColorGradingService, IDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string Ffmpeg => FfmpegExecutable.Resolve(config.FfmpegPath);
@@ -47,7 +46,6 @@ public sealed class ColorGradingService(AppConfig config, AppPaths paths, IMetad
             var output = Path.GetFullPath(request.OutputPath);
             if (!File.Exists(source)) throw new FileNotFoundException("找不到源视频。", source);
             if (source.Equals(output, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("请选择新的输出文件，不能覆盖原片。");
-            if (recordingActive?.Invoke() == true) throw new InvalidOperationException("请先停止录制监听，再生成调色视频。");
             partial = output + ".part.mp4";
             if (File.Exists(output) || File.Exists(partial)) throw new IOException("输出文件已存在，请更换文件名。");
             var info = await ProbeAsync(source, token);
@@ -55,9 +53,6 @@ public sealed class ColorGradingService(AppConfig config, AppPaths paths, IMetad
             var drive = new DriveInfo(Path.GetPathRoot(output)!);
             if (drive.AvailableFreeSpace < Math.Max(64 * 1024 * 1024, new FileInfo(source).Length))
                 throw new IOException("输出磁盘空间不足。");
-            var encoder = new[] { "-c:v", "h264_nvenc", "-preset", "p5", "-cq", "18", "-b:v", "0" };
-            try { await RunAsync(Ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=s=320x180:r=30", "-frames:v", "1", .. encoder, "-f", "null", "-"], token); }
-            catch (IOException) { encoder = ["-c:v", "libx264", "-preset", "fast", "-crf", "18"]; }
             Directory.CreateDirectory(Path.GetDirectoryName(output)!);
             using (File.Open(partial, FileMode.CreateNew, FileAccess.Write)) { }
             ownsPartial = true;
@@ -66,9 +61,10 @@ public sealed class ColorGradingService(AppConfig config, AppPaths paths, IMetad
             lut = Path.Combine(runtime, $"grade_{Guid.NewGuid():N}.cube");
             await File.WriteAllTextAsync(lut, ColorGradeLut.ToCube(table), token);
             var filter = $"lut3d=file={Path.GetFileName(lut)}:interp=trilinear";
-            var args = new List<string> { "-hide_banner", "-v", "warning", "-nostdin", "-y", "-i", source,
-                "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0", "-vf", filter };
-            args.AddRange(encoder);
+            // Leave decoder, filter and encoder capacity for real-time recording.
+            var args = new List<string> { "-hide_banner", "-v", "warning", "-nostdin", "-y", "-threads:v", "2", "-i", source,
+                "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0", "-map_chapters", "0", "-filter_threads", "2", "-vf", filter,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-threads:v", "2" };
             args.AddRange(["-fps_mode", "passthrough", "-pix_fmt", "yuv420p"]);
             // Keep every original audio track. Only transcode formats unsuitable for MP4.
             var copyAudio = info.AudioCodecs.All(c => c is "aac" or "mp3" or "ac3" or "alac");
@@ -113,6 +109,8 @@ public sealed class ColorGradingService(AppConfig config, AppPaths paths, IMetad
         if (workingDirectory != null) start.WorkingDirectory = workingDirectory;
         foreach (var argument in args) start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new IOException("无法启动视频处理程序。");
+        try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
         var error = ProcessRunner.ReadBoundedTextAsync(process.StandardError);
         async Task<string> Read()
         {

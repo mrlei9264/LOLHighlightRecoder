@@ -6,4 +6,7 @@ public sealed record HighlightTrigger(
     string Label,
     double EventTime,
     DateTime DetectedAt,
-    Dictionary<string, object> RawEvent);
+    Dictionary<string, object> RawEvent)
+{
+    public double? RecordingSeconds { get; init; }
+}

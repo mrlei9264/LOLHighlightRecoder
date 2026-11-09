@@ -24,16 +24,24 @@ public class HomeViewModel : INotifyPropertyChanged, IDisposable
     private DateTime _resourceSample = DateTime.UtcNow;
     private string _cpu = "—", _memory = "—", _disk = "—", _uptime = "—";
     private double _cpuPercent;
+    private double _gameAudioLevel, _microphoneLevel;
+    private string _recordingDuration = "00:00:00";
+    private bool _hasLowDiskSpace;
+    private long _lastAudioSample = Stopwatch.GetTimestamp();
     private string _lastState = "";
     public string CpuUsage { get => _cpu; private set => SetField(ref _cpu, value); }
     public double CpuPercent { get => _cpuPercent; private set => SetField(ref _cpuPercent, value); }
     public string MemoryUsage { get => _memory; private set => SetField(ref _memory, value); }
     public string DiskFree { get => _disk; private set => SetField(ref _disk, value); }
     public string Uptime { get => _uptime; private set => SetField(ref _uptime, value); }
+    public string RecordingDuration { get => _recordingDuration; private set => SetField(ref _recordingDuration, value); }
+    public bool HasLowDiskSpace { get => _hasLowDiskSpace; private set => SetField(ref _hasLowDiskSpace, value); }
     public string FrameRate => $"{_config.Fps} FPS";
     public string RecordingMode => _config.RecordingMode == "full_game" ? "整局" : "高光";
-    public string AudioState => _config.AudioEnabled ? "已开启" : "关闭";
-    public string MicrophoneState => _config.MicrophoneEnabled ? "已开启" : "关闭";
+    public string AudioState => AudioStatus(_config.AudioEnabled, _snapshot.IsCapturingGameAudio);
+    public string MicrophoneState => AudioStatus(_config.MicrophoneEnabled, _snapshot.IsCapturingMicrophone);
+    public double GameAudioLevel { get => _gameAudioLevel; private set => SetField(ref _gameAudioLevel, value); }
+    public double MicrophoneLevel { get => _microphoneLevel; private set => SetField(ref _microphoneLevel, value); }
     public string TriggerRules => string.Join(" · ", RecordingEventCatalog.All.Where(e => _config.RecordingEvents.Contains(e.Id)).Select(e => e.Label));
     public string MemoryBudget => $"{_config.MemoryBufferMb} MB";
     public ObservableCollection<DashboardState> StateChanges { get; } = new();
@@ -80,6 +88,27 @@ public class HomeViewModel : INotifyPropertyChanged, IDisposable
     public string StatusDetail => _snapshot.Status == RecordingStatus.Recording
         ? $"{_snapshot.Detail} · 已缓存 {_snapshot.BufferedSeconds:0.0} 秒"
         : _snapshot.Detail;
+    public string RecordingHeading => Status switch
+    {
+        RecordingStatus.WaitingForGame => "等待入局",
+        RecordingStatus.Starting => "正在启动采集",
+        RecordingStatus.Recording => "正在录制",
+        RecordingStatus.Stopping or RecordingStatus.Exporting => "正在保存",
+        _ => StatusLabel
+    };
+    public string RecordingHint => Status switch
+    {
+        RecordingStatus.WaitingForGame => "进入英雄联盟对局后自动录制",
+        RecordingStatus.Stopping or RecordingStatus.Exporting => "保存完成后可在视频库或待确认录像中查看",
+        _ => _snapshot.Detail
+    };
+    public string StopActionLabel => Status switch
+    {
+        RecordingStatus.Stopping or RecordingStatus.Exporting => "保存中…",
+        RecordingStatus.Starting => "启动中…",
+        _ => _snapshot.IsCapturingVideo ? "停止并保存" : "停止监听"
+    };
+    public bool ShowRecordingDuration => _snapshot.IsCapturingVideo;
     public bool IsStartVisible => _snapshot.Status is RecordingStatus.Idle or RecordingStatus.Error;
     public bool IsStopVisible => _snapshot.Status.IsActive();
     public bool IsBusy => _snapshot.Status is RecordingStatus.Starting or RecordingStatus.Stopping or RecordingStatus.Exporting;
@@ -169,6 +198,11 @@ public class HomeViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(StatusGlyph));
         OnPropertyChanged(nameof(StatusTitle));
         OnPropertyChanged(nameof(StatusDetail));
+        OnPropertyChanged(nameof(RecordingHeading));
+        OnPropertyChanged(nameof(RecordingHint));
+        OnPropertyChanged(nameof(StopActionLabel));
+        OnPropertyChanged(nameof(ShowRecordingDuration));
+        RefreshRecordingDuration();
         OnPropertyChanged(nameof(IsStartVisible));
         OnPropertyChanged(nameof(IsStopVisible));
         OnPropertyChanged(nameof(IsBusy));
@@ -179,6 +213,10 @@ public class HomeViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(HasError));
         OnPropertyChanged(nameof(HasWarning));
         OnPropertyChanged(nameof(WarningMessage));
+        OnPropertyChanged(nameof(AudioState));
+        OnPropertyChanged(nameof(MicrophoneState));
+        if (!snapshot.IsCapturingGameAudio) GameAudioLevel = 0;
+        if (!snapshot.IsCapturingMicrophone) MicrophoneLevel = 0;
         OnPropertyChanged(nameof(BufferedSeconds));
         OnPropertyChanged(nameof(BufferText));
         OnPropertyChanged(nameof(BufferCapacityText));
@@ -220,9 +258,15 @@ public class HomeViewModel : INotifyPropertyChanged, IDisposable
             MemoryUsage = $"{process.WorkingSet64 / 1048576d:0} MB";
             Uptime = (DateTime.Now - process.StartTime).ToString(@"hh\:mm\:ss");
             var drive = new DriveInfo(Path.GetPathRoot(OutputDirectory)!);
-            DiskFree = $"{drive.AvailableFreeSpace / 1073741824d:0.0} GB";
+            var freeGb = drive.AvailableFreeSpace / 1073741824d;
+            DiskFree = $"{freeGb:0.0} GB";
+            HasLowDiskSpace = freeGb < _config.MinimumFreeGb;
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or ArgumentException) { DiskFree = "不可用"; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or ArgumentException)
+        {
+            DiskFree = "不可用";
+            HasLowDiskSpace = false;
+        }
     }
 
     private void LoadRecentVideos()
@@ -281,6 +325,29 @@ public class HomeViewModel : INotifyPropertyChanged, IDisposable
             summary += " · 分轨";
         return summary;
     }
+
+    internal void RefreshAudioLevels()
+    {
+        var now = Stopwatch.GetTimestamp();
+        if (Stopwatch.GetElapsedTime(_lastAudioSample, now) < TimeSpan.FromMilliseconds(100)) return;
+        _lastAudioSample = now;
+        var peaks = _session.ReadAudioPeaks();
+        GameAudioLevel = _snapshot.IsCapturingGameAudio ? AudioLevel(peaks.GameAudio) : 0;
+        MicrophoneLevel = _snapshot.IsCapturingMicrophone ? AudioLevel(peaks.Microphone) : 0;
+        RefreshRecordingDuration();
+    }
+
+    private void RefreshRecordingDuration()
+    {
+        var elapsed = _snapshot.CaptureStartedAtUtc is { } started ? DateTime.UtcNow - started : TimeSpan.Zero;
+        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+        RecordingDuration = $"{(long)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+    }
+    private string AudioStatus(bool enabled, bool capturing)
+        => capturing ? "采集中" : !enabled ? "关闭" : _snapshot.IsCapturingVideo ? "未采集" : "等待采集";
+
+    private static double AudioLevel(float peak)
+        => peak > 0 ? Math.Clamp((20 * Math.Log10(peak) + 60) / 60 * 100, 0, 100) : 0;
 
     private static string EncoderName(string encoder) => encoder.ToLowerInvariant() switch
     {

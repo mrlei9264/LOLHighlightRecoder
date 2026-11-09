@@ -3,6 +3,8 @@
            UpgradeCode="5BD8D5CB-9464-46EA-B4CE-0E6300A06939" Scope="perMachine">
     <MajorUpgrade AllowSameVersionUpgrades="yes" IgnoreLanguage="yes" DowngradeErrorMessage="A newer version of Rift Replay is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="RiftReplay.exe" SourceFile="!(bindpath.Publish)\LolHighlight.Desktop.exe" />
+    <Property Id="ARPPRODUCTICON" Value="RiftReplay.exe" />
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
     <UI>
       <!-- Skip the stock placeholder license page on both forward and back navigation. -->
@@ -25,7 +27,7 @@
       <Component Id="MainProgram">
         <File Id="AppExe" Source="!(bindpath.Publish)\LolHighlight.Desktop.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Rift Replay"
-                    WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
+                    WorkingDirectory="INSTALLFOLDER" Advertise="yes" Icon="RiftReplay.exe" IconIndex="0" />
         </File>
       </Component>
       <Component Id="InstalledMode">

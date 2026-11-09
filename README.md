@@ -4,13 +4,17 @@ Windows 上的英雄联盟录制工具。支持按击杀、多杀、目标物等
 
 ## 一键构建
 
-需要 Windows 10 2004 或更新版本的 x64 系统和 [.NET 8 SDK（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。克隆仓库后，在仓库根目录运行：
+需要 Windows 10 2004 或更新版本的 x64 系统和 [.NET 8 SDK（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。克隆仓库后，在命令提示符（CMD）中进入仓库根目录并运行以下命令。
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+```cmd
+build.cmd
 ```
 
 首次构建需要联网下载 NuGet 依赖、WiX Toolset 和固定版本的 FFmpeg。脚本校验 FFmpeg 压缩包的 SHA-256，并自包含发布 .NET 和 Windows App SDK。两种成品均随附 `ffmpeg.exe` 和 `ffprobe.exe`，无需设置 PATH 或手动配置编码器。
+
+需要下载 FFmpeg 时，CMD 会提示选择线路。`1` 使用 GitHub 官方下载（默认），`2` 使用面向中国大陆网络的 [GH-Proxy 第三方加速](https://gh-proxy.com/docs/github-accelerator)。下载进度条会显示百分比、已下载大小和实时速度，完成时显示平均速度。
+
+也可以运行 `build.cmd global` 或 `build.cmd cn` 直接选定线路。无交互构建默认使用 GitHub 官方下载，有效的本地缓存会直接复用。
 
 | 产物 | 使用方法 |
 | --- | --- |

@@ -6,14 +6,14 @@ namespace LolHighlight.Recording.Infrastructure;
 internal static class ProcessRunner
 {
     internal static async Task<(int ExitCode, string Output, string Error)> RunAsync(
-        ProcessStartInfo startInfo, TimeSpan timeout, CancellationToken cancellationToken)
+        ProcessStartInfo startInfo, TimeSpan timeout, CancellationToken cancellationToken, int maxOutputChars = 256 * 1024)
     {
         startInfo.UseShellExecute = false;
         startInfo.CreateNoWindow = true;
         startInfo.RedirectStandardOutput = true;
         startInfo.RedirectStandardError = true;
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Cannot start process");
-        var output = ReadBoundedTextAsync(process.StandardOutput);
+        var output = ReadBoundedTextAsync(process.StandardOutput, maxOutputChars);
         var error = ReadBoundedTextAsync(process.StandardError);
         try
         {

@@ -14,6 +14,7 @@ public interface IFfmpegPipeline : IDisposable
     bool IsRunning { get; }
     string? LastError { get; }
     string? ActiveEncoder { get; }
+    double? VideoStartSeconds => null;
     void WriteGameAudio(ReadOnlySpan<byte> data);
     void WriteMicrophone(ReadOnlySpan<byte> data);
 }
@@ -43,6 +44,7 @@ public sealed class FfmpegPipeline : IFfmpegPipeline
     private string? _lastError;
     private string? _activeEncoder;
     private string? _fatalError;
+    private double? _videoStartSeconds;
     private readonly StringBuilder _diagnostics = new();
 
     public bool IsRunning
@@ -64,6 +66,11 @@ public sealed class FfmpegPipeline : IFfmpegPipeline
         get { lock (_lock) return _activeEncoder; }
     }
 
+    public double? VideoStartSeconds
+    {
+        get { lock (_lock) return _videoStartSeconds; }
+    }
+
     public FfmpegPipeline(IMemoryRingBuffer ringBuffer, AppConfig config, IRecordingClock clock, RecordingPreviewTap? preview = null)
     {
         _ringBuffer = ringBuffer;
@@ -78,6 +85,7 @@ public sealed class FfmpegPipeline : IFfmpegPipeline
     public async Task StartAsync(CaptureOptions options, CancellationToken cancellationToken = default)
     {
         await StopAsync();
+        lock (_lock) _videoStartSeconds = null;
 
         ValidateCaptureTarget(options);
         await EnsureGraphicsCaptureAvailableAsync(cancellationToken);
@@ -254,6 +262,10 @@ public sealed class FfmpegPipeline : IFfmpegPipeline
         using var segmenter = new TransportStreamSegmenter(
             segment =>
             {
+                if (segment.Index == 0)
+                {
+                    lock (_lock) _videoStartSeconds = segment.TimestampStart;
+                }
                 _ringBuffer.PushSegment(segment.Index, segment.TimestampStart, segment.TimestampEnd, segment.Data);
                 firstSegment.TrySetResult();
             },

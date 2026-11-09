@@ -23,8 +23,12 @@ public sealed partial class HomePage : UserControl
         InitializeComponent();
         _vm = App.GetService<HomeViewModel>(); DataContext = _vm;
         _previewTimer = DispatcherQueue.CreateTimer();
-        _previewTimer.Interval = TimeSpan.FromMilliseconds(100);
-        _previewTimer.Tick += async (_, _) => await ShowLatestFrameAsync();
+        _previewTimer.Interval = TimeSpan.FromSeconds(1d / LiveRecordingPreview.FramesPerSecond);
+        _previewTimer.Tick += async (_, _) =>
+        {
+            _vm.RefreshAudioLevels();
+            await ShowLatestFrameAsync();
+        };
         _vm.PropertyChanged += Changed;
         Loaded += (_, _) => SetActive(Visibility == Visibility.Visible);
         Unloaded += (_, _) => SetActive(false);
@@ -40,7 +44,7 @@ public sealed partial class HomePage : UserControl
         if (!wanted)
         {
             StopPreview();
-            PreviewHint.Text = _vm.Status == RecordingStatus.Idle ? "开始录制后显示采集画面" : _vm.StatusLabel;
+            PreviewHint.Text = _vm.Status == RecordingStatus.WaitingForGame ? "入局后显示采集画面" : "录制画面将在这里显示";
             return;
         }
         if (_preview != null) return;
@@ -97,5 +101,61 @@ public sealed partial class HomePage : UserControl
 
     private void Start_Click(object sender, RoutedEventArgs e)
         => ((Application.Current as App)?.MainWindow as MainWindow)?.StartRecording();
+
+    private void StartWeGame_Click(object sender, RoutedEventArgs e)
+    {
+        GameLaunchFeedback.IsOpen = false;
+        try { LeagueGameLauncher.StartWithWeGame(); }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            ShowGameLaunchFeedback("WeGame 启动失败", error.Message);
+        }
+    }
+
+    private async void StartLeagueClient_Click(object sender, RoutedEventArgs e)
+        => await StartLeagueClientAsync(chooseClient: false);
+
+    private async void ChooseLeagueClient_Click(object sender, RoutedEventArgs e)
+        => await StartLeagueClientAsync(chooseClient: true);
+
+    private async Task StartLeagueClientAsync(bool chooseClient)
+    {
+        GameLaunchFeedback.IsOpen = false;
+        GameLaunchButton.IsEnabled = false;
+        try
+        {
+            var launcher = App.GetService<LeagueGameLauncher>();
+            var path = chooseClient ? null : await Task.Run(launcher.FindClient);
+            var picked = path == null;
+            path ??= await App.GetService<ISettingsPickerService>().PickLeagueClientAsync();
+            if (path == null) return;
+
+            LeagueGameLauncher.StartClient(path);
+            if (picked && !launcher.RememberClient(path))
+                ShowGameLaunchFeedback("无法记住客户端路径", "已发送启动请求，下次启动时可能需要重新选择客户端。");
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException)
+        {
+            ShowGameLaunchFeedback("普通启动失败", error.Message);
+        }
+        finally { GameLaunchButton.IsEnabled = true; }
+    }
+
+    private void ShowGameLaunchFeedback(string title, string message)
+    {
+        GameLaunchFeedback.Title = title;
+        GameLaunchFeedback.Message = message;
+        GameLaunchFeedback.IsOpen = true;
+    }
+
+    internal void SetPendingReviewCount(int count)
+    {
+        PendingReviewNotice.Message = count > 0 ? $"有 {count} 场对局等待确认" : "";
+        PendingReviewNotice.IsOpen = count > 0;
+    }
+
+    private void ReviewPending_Click(object sender, RoutedEventArgs e)
+        => ((Application.Current as App)?.MainWindow as MainWindow)?.ReviewPending();
 }
 

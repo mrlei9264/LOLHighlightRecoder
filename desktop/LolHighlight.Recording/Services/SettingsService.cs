@@ -96,6 +96,7 @@ public sealed class SettingsService : ISettingsService
         target.CaptureMode = source.CaptureMode;
         target.RecordingMode = source.RecordingMode;
         target.ReviewAfterMatch = source.ReviewAfterMatch;
+        target.DeleteToRecycleBin = source.DeleteToRecycleBin;
         target.RecordingEvents = source.RecordingEvents.ToArray();
         target.ShowEventNotifications = source.ShowEventNotifications;
         target.EventNotificationStyle = source.EventNotificationStyle;

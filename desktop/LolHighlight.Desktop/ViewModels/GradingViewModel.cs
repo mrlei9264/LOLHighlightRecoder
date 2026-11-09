@@ -20,10 +20,12 @@ public abstract class GradingObservable : INotifyPropertyChanged
 public sealed class GradingSource(string path, string? title = null, string tags = "", string meta = "") : GradingObservable
 {
     private string _name = title ?? System.IO.Path.GetFileName(path), _tags = tags, _meta = meta;
+    private bool _included;
     public string Path { get; } = path;
     public string Name { get => _name; private set => Set(ref _name, value); }
     public string TagText { get => _tags; private set => Set(ref _tags, value); }
     public string Meta { get => _meta; private set => Set(ref _meta, value); }
+    public bool Included { get => _included; set => Set(ref _included, value); }
     public void UpdateFrom(GradingSource source) { Name = source.Name; TagText = source.TagText; Meta = source.Meta; }
 }
 
@@ -76,11 +78,13 @@ public sealed class GradingViewModel : GradingObservable, IDisposable
     public string OutputDirectory { get => _output; set => Set(ref _output, value); }
     public bool IsBusy { get => _busy; private set { if (Set(ref _busy, value)) { Changed(nameof(CanChange)); Changed(nameof(CanGenerate)); Changed(nameof(GenerateLabel)); } } }
     public bool CanChange => !IsBusy;
-    public bool CanGenerate => !IsBusy && HasSource;
-    public string GenerateLabel => IsBusy ? $"生成 {Progress:0}%" : "生成";
+    private int IncludedCount => Sources.Count(source => source.Included);
+    public bool CanGenerate => !IsBusy && (HasSource || IncludedCount > 0);
+    public string GenerateLabel => IsBusy ? $"生成 {Progress:0}%" : IncludedCount > 1 ? $"生成 {IncludedCount} 个" : "生成";
     public double Progress { get => _progress; private set { if (Set(ref _progress, value)) Changed(nameof(GenerateLabel)); } }
     public string Message { get => _message; private set => Set(ref _message, value); }
-    public string SourceSummary => $"{Sources.Count} 个录像";
+    public string SourceSummary => Sources.Count == 0 ? "视频库暂无录像" :
+        IncludedCount > 0 ? $"已勾选 {IncludedCount}/{Sources.Count} 条" : "勾选录像可批量导出";
     public bool HasOutput => File.Exists(_lastOutput);
     public ICommand RefreshCommand { get; }
     public ICommand GenerateCommand { get; }
@@ -91,17 +95,35 @@ public sealed class GradingViewModel : GradingObservable, IDisposable
 
     public void AddSources(IEnumerable<string> paths)
     {
-        GradingSource? first = null;
-        foreach (var path in paths.Where(File.Exists))
+        if (IsBusy) return;
+        var requested = paths.Where(File.Exists).Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (requested.Count == 0) return;
+        foreach (var path in requested)
         {
-            var full = Path.GetFullPath(path);
-            var item = Sources.FirstOrDefault(s => s.Path.Equals(full, StringComparison.OrdinalIgnoreCase));
-            if (item != null) { first ??= item; continue; }
-            item = new(full, tags: VideoTags.Read(_footer, full));
-            Sources.Add(item); first ??= item;
+            if (Sources.Any(source => source.Path.Equals(path, StringComparison.OrdinalIgnoreCase))) continue;
+            InsertSource(Sources.Count, new(path, tags: VideoTags.Read(_footer, path)));
         }
-        if (first != null) SelectedSource = first;
+        foreach (var source in Sources) source.Included = requested.Contains(source.Path);
+        SelectedSource = Sources.First(source => source.Included);
+        UpdateSourceSummary();
+    }
+
+    private void InsertSource(int index, GradingSource source)
+    {
+        source.PropertyChanged += SourceChanged;
+        Sources.Insert(index, source);
+    }
+
+    private void SourceChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(GradingSource.Included)) UpdateSourceSummary();
+    }
+
+    private void UpdateSourceSummary()
+    {
         Changed(nameof(SourceSummary));
+        Changed(nameof(CanGenerate));
+        Changed(nameof(GenerateLabel));
     }
     public async Task RefreshAsync()
     {
@@ -119,17 +141,21 @@ public sealed class GradingViewModel : GradingObservable, IDisposable
             _updatingSources = true;
             try
             {
-            foreach (var old in Sources.Where(s => !desired.Any(v => v.Path.Equals(s.Path, StringComparison.OrdinalIgnoreCase))).ToArray()) Sources.Remove(old);
+            foreach (var old in Sources.Where(s => !desired.Any(v => v.Path.Equals(s.Path, StringComparison.OrdinalIgnoreCase))).ToArray())
+            {
+                old.PropertyChanged -= SourceChanged;
+                Sources.Remove(old);
+            }
             for (var i = 0; i < desired.Length; i++)
             {
                 var existing = Sources.FirstOrDefault(s => s.Path.Equals(desired[i].Path, StringComparison.OrdinalIgnoreCase));
-                if (existing == null) Sources.Insert(i, desired[i]);
+                if (existing == null) InsertSource(i, desired[i]);
                 else { existing.UpdateFrom(desired[i]); var previous = Sources.IndexOf(existing); if (previous != i) Sources.Move(previous, i); }
             }
             }
             finally { _updatingSources = false; }
             SelectedSource = Sources.FirstOrDefault(s => s.Path.Equals(selected, StringComparison.OrdinalIgnoreCase)) ?? Sources.FirstOrDefault();
-            Changed(nameof(SourceSummary));
+            UpdateSourceSummary();
         }
         catch (Exception e) { Message = "读取录像失败：" + e.Message; }
     }
@@ -144,12 +170,15 @@ public sealed class GradingViewModel : GradingObservable, IDisposable
     }
     private async Task GenerateAsync()
     {
+        var sources = Sources.Where(source => source.Included).ToArray();
+        if (sources.Length == 0 && SelectedSource is { } selected) sources = [selected];
+        var completed = 0;
         IsBusy = true; Progress = 0;
         _cancel = new();
         var token = _cancel.Token;
+        var lockedInputs = new List<FileStream>();
         try
         {
-            var sources = SelectedSource == null ? Array.Empty<GradingSource>() : new[] { SelectedSource };
             if (sources.Length == 0) throw new ArgumentException("请选择录像。");
             var tone = SelectedTone; var strength = Strength;
             if (AskExportLocation)
@@ -162,21 +191,36 @@ public sealed class GradingViewModel : GradingObservable, IDisposable
             token.ThrowIfCancellationRequested();
             var folder = Path.GetFullPath(OutputDirectory);
             SavePreferences();
+            // Quota cleanup and file management must not remove a source waiting in the batch.
+            foreach (var source in sources)
+                lockedInputs.Add(File.Open(source.Path, FileMode.Open, FileAccess.Read, FileShare.Read));
             for (var i = 0; i < sources.Length; i++)
             {
+                var source = sources[i];
                 var index = i;
                 var output = Path.Combine(folder, $"grade_{tone.Id}_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.mp4");
                 var progress = new Progress<ColorGradeProgress>(p => Dispatch(() =>
-                { if (!_disposed) { Progress = (index + p.Percent / 100) / sources.Length * 100; Message = p.Message; } }));
-                var result = await _grading.RenderAsync(new(sources[i].Path, output, tone.Id, strength), progress, token);
+                {
+                    if (!_disposed && IsBusy && completed == index && !token.IsCancellationRequested)
+                    {
+                        Progress = (index + p.Percent / 100) / sources.Length * 100;
+                        Message = $"第 {index + 1}/{sources.Length} 个 · {p.Message}";
+                    }
+                }));
+                var result = await _grading.RenderAsync(new(source.Path, output, tone.Id, strength), progress, token);
+                completed++;
                 _lastOutput = result; Changed(nameof(HasOutput));
             }
-            Message = "已生成";
+            Message = $"已生成 {completed} 个录像";
             Progress = 100;
         }
-        catch (OperationCanceledException) { Message = "已取消"; }
-        catch (Exception e) { Message = e.Message; }
-        finally { _cancel.Dispose(); _cancel = null; IsBusy = false; }
+        catch (OperationCanceledException) { Message = $"已取消 · 已生成 {completed}/{sources.Length} 个录像"; }
+        catch (Exception e) { Message = $"已生成 {completed}/{sources.Length} 个录像 · {e.Message}"; }
+        finally
+        {
+            foreach (var input in lockedInputs) input.Dispose();
+            _cancel.Dispose(); _cancel = null; IsBusy = false;
+        }
     }
     private void Dispatch(Action action) { if (_dispatcher is { HasThreadAccess: false }) _dispatcher.TryEnqueue(() => action()); else action(); }
     private string PreferencesPath => Path.Combine(_paths.DataRoot, "color-grading.json");

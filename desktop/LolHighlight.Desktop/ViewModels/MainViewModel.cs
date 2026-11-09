@@ -53,8 +53,14 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool CanStart => !IsRunning && !IsBusy;
     public bool CanStop => IsRunning && !IsBusy;
     public bool CanToggleRecording => CanStart || CanStop;
-    public string RecordingActionLabel => IsRunning ? "停止录制" : "开始录制";
-    public string WorkStatus => _generating ? $"生成中 · {_gradeProgress:0}%" :
+    public string RecordingActionLabel => Status switch
+    {
+        RecordingStatus.Stopping or RecordingStatus.Exporting => "保存中…",
+        RecordingStatus.Starting => "启动中…",
+        _ => !IsRunning ? "开始监听" : _snapshot.IsCapturingVideo ? "停止并保存" : "停止监听"
+    };
+    public string WorkStatus => Status == RecordingStatus.Error ? StatusLabel : _generating ?
+        (IsRunning ? $"{StatusLabel} · 调色 {_gradeProgress:0}%" : $"调色中 · {_gradeProgress:0}%") :
         IsRunning || Status == RecordingStatus.Error ? StatusLabel : _libraryPlaying || _gradingPlaying ? "播放中" : "空闲";
     public string WorkStatusColor => Status == RecordingStatus.Error ? "#F08080" :
         _generating || _libraryPlaying || _gradingPlaying || Status == RecordingStatus.Recording ? "#76D5CA" : IsRunning ? "#E6C868" : "#858B91";

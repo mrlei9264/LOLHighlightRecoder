@@ -16,6 +16,7 @@ public static class DependencyInjection
         paths.NormalizeDataDirectories(config);
 
         services.AddSingleton(paths);
+        services.AddSingleton<LolHighlight.Desktop.Services.LeagueGameLauncher>();
         services.AddSingleton(config);
         services.AddSingleton<MatchReviewStore>();
 
@@ -31,7 +32,7 @@ public static class DependencyInjection
         services.AddSingleton<IGameWindowLocator, GameWindowLocator>();
         services.AddSingleton<IStorageQuotaManager, StorageQuotaManager>();
         services.AddSingleton<IColorGradingService>(sp => new ColorGradingService(config, paths,
-            sp.GetRequiredService<IMetadataFooterService>(), () => sp.GetRequiredService<IRecordingSessionService>().IsRunning));
+            sp.GetRequiredService<IMetadataFooterService>()));
         services.AddSingleton<LolHighlight.Desktop.Services.IColorPickerService>(_ =>
             new LolHighlight.Desktop.Services.ColorPickerService(() => (Microsoft.UI.Xaml.Application.Current as App)?.MainWindow));
         services.AddSingleton<GradingViewModel>();

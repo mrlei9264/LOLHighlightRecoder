@@ -41,6 +41,9 @@ public sealed class AppConfig
     [JsonPropertyName("review_after_match")]
     public bool ReviewAfterMatch { get; set; } = true;
 
+    [JsonPropertyName("delete_to_recycle_bin")]
+    public bool DeleteToRecycleBin { get; set; } = true;
+
     [JsonPropertyName("recording_mode")]
     public string RecordingMode { get; set; } = "highlights";
 

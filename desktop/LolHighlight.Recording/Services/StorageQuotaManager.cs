@@ -1,3 +1,6 @@
+using System.Text.Json;
+using LolHighlight.Recording.Infrastructure;
+
 namespace LolHighlight.Recording.Services;
 
 public interface IStorageQuotaManager
@@ -6,8 +9,34 @@ public interface IStorageQuotaManager
     void Enforce(string outputDirectory, int quotaGb, int minimumFreeGb, string? protectedPath = null, long incomingBytes = 0);
 }
 
-public sealed class StorageQuotaManager : IStorageQuotaManager
+public sealed class StorageQuotaManager(AppPaths? paths = null) : IStorageQuotaManager
 {
+    private static readonly object RenameGate = new();
+    private readonly string _renameIndex = Path.Combine((paths ?? new AppPaths()).DataRoot, "recording-renames.json");
+
+    public void MoveVideo(string sourcePath, string destinationPath)
+    {
+        lock (RenameGate)
+        {
+            if (!HasRecordingPrefix(Path.GetFileName(destinationPath)))
+            {
+                var index = ReadRenameIndex();
+                var source = new FileInfo(sourcePath);
+                if (IsManaged(source, index))
+                {
+                    foreach (var path in index.Keys.Where(path => !File.Exists(path)).ToArray()) index.Remove(path);
+                    // Stage the new path before moving, so a failed or interrupted move preserves the old entry.
+                    index[destinationPath] = VideoStamp.From(source);
+                    Directory.CreateDirectory(Path.GetDirectoryName(_renameIndex)!);
+                    var temp = _renameIndex + ".tmp";
+                    File.WriteAllText(temp, JsonSerializer.Serialize(index));
+                    File.Move(temp, _renameIndex, overwrite: true);
+                }
+            }
+            File.Move(sourcePath, destinationPath);
+        }
+    }
+
     public void EnsurePendingAppendRoom(string pendingPath, string outputPath, int quotaGb, int minimumFreeGb, long incomingBytes)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(outputPath))!;
@@ -25,10 +54,7 @@ public sealed class StorageQuotaManager : IStorageQuotaManager
         if (incomingBytes > quotaGb * 1024L * 1024 * 1024)
             throw new IOException("单个高光超过录像配额，请提高配额或缩短片段时长");
         Enforce(outputDirectory, quotaGb, minimumFreeGb, protectedPath, incomingBytes);
-        var total = new DirectoryInfo(outputDirectory).EnumerateFiles("*.mp4", new EnumerationOptions
-        { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.ReparsePoint })
-            .Where(f => (f.Name.StartsWith("highlight_", StringComparison.OrdinalIgnoreCase) || f.Name.StartsWith("fullgame_", StringComparison.OrdinalIgnoreCase)) &&
-                !f.Name.EndsWith(".part.mp4", StringComparison.OrdinalIgnoreCase)).Sum(f => f.Length);
+        var total = ManagedVideos(outputDirectory).Sum(file => file.Length);
         if (total + incomingBytes > quotaGb * 1024L * 1024 * 1024)
             throw new IOException("录像空间已达上限，请先处理待确认录像或提高容量上限。");
 
@@ -39,6 +65,12 @@ public sealed class StorageQuotaManager : IStorageQuotaManager
 
     public void Enforce(string outputDirectory, int quotaGb, int minimumFreeGb, string? protectedPath = null, long incomingBytes = 0)
     {
+        // A file must stay at the path used to count it until this cleanup finishes.
+        lock (RenameGate) EnforceCore(outputDirectory, quotaGb, minimumFreeGb, protectedPath, incomingBytes);
+    }
+
+    private void EnforceCore(string outputDirectory, int quotaGb, int minimumFreeGb, string? protectedPath, long incomingBytes)
+    {
         outputDirectory = RecordingRoot(outputDirectory);
         if (!Directory.Exists(outputDirectory))
             return;
@@ -47,18 +79,7 @@ public sealed class StorageQuotaManager : IStorageQuotaManager
             ? null
             : Path.GetFullPath(protectedPath);
 
-        var files = new DirectoryInfo(outputDirectory)
-            .EnumerateFiles("*.mp4", new EnumerationOptions
-            {
-                RecurseSubdirectories = true,
-                IgnoreInaccessible = true,
-                AttributesToSkip = FileAttributes.ReparsePoint
-            })
-            .Where(file => (file.Name.StartsWith("highlight_", StringComparison.OrdinalIgnoreCase) ||
-                            file.Name.StartsWith("fullgame_", StringComparison.OrdinalIgnoreCase)) &&
-                           !file.Name.EndsWith(".part.mp4", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(file => file.LastWriteTimeUtc)
-            .ToList();
+        var files = ManagedVideos(outputDirectory).OrderBy(file => file.LastWriteTimeUtc).ToList();
 
         var quotaBytes = quotaGb * 1024L * 1024L * 1024L;
         var totalBytes = files.Sum(file => file.Length) + incomingBytes;
@@ -94,6 +115,43 @@ public sealed class StorageQuotaManager : IStorageQuotaManager
                 // Same policy for files that cannot be removed due to ACLs.
             }
         }
+    }
+
+    private List<FileInfo> ManagedVideos(string outputDirectory)
+    {
+        lock (RenameGate)
+        {
+            Dictionary<string, VideoStamp> index;
+            try { index = ReadRenameIndex(); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
+            { index = new(StringComparer.OrdinalIgnoreCase); }
+
+            return new DirectoryInfo(outputDirectory).EnumerateFiles("*.mp4", new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+                AttributesToSkip = FileAttributes.ReparsePoint
+            }).Where(file => !file.Name.EndsWith(".part.mp4", StringComparison.OrdinalIgnoreCase) && IsManaged(file, index)).ToList();
+        }
+    }
+
+    private Dictionary<string, VideoStamp> ReadRenameIndex()
+    {
+        var entries = File.Exists(_renameIndex)
+            ? JsonSerializer.Deserialize<Dictionary<string, VideoStamp>>(File.ReadAllText(_renameIndex))
+            : null;
+        return entries == null ? new(StringComparer.OrdinalIgnoreCase) : new(entries, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsManaged(FileInfo file, Dictionary<string, VideoStamp> index) =>
+        HasRecordingPrefix(file.Name) || (index.TryGetValue(file.FullName, out var stamp) && file.Exists && stamp == VideoStamp.From(file));
+
+    private static bool HasRecordingPrefix(string name) =>
+        name.StartsWith("highlight_", StringComparison.OrdinalIgnoreCase) || name.StartsWith("fullgame_", StringComparison.OrdinalIgnoreCase);
+
+    private readonly record struct VideoStamp(long Length, DateTime LastWriteUtc)
+    {
+        public static VideoStamp From(FileInfo file) => new(file.Length, file.LastWriteTimeUtc);
     }
 
     private static string RecordingRoot(string directory)

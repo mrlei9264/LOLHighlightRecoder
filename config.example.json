@@ -11,6 +11,7 @@
   "capture_mode": "window",
   "recording_mode": "highlights",
   "review_after_match": true,
+  "delete_to_recycle_bin": true,
   "recording_events": ["kill", "multikill_2", "multikill_3", "multikill_4", "multikill_5", "first_blood", "ace", "dragonkill", "heraldkill", "baronkill", "turretkilled", "inhibkilled"],
   "show_event_notifications": true,
   "event_notification_style": "pulse",

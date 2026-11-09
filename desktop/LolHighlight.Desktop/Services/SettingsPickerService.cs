@@ -8,6 +8,7 @@ public interface ISettingsPickerService
 {
     Task<string?> PickOutputFolderAsync();
     Task<string?> PickFfmpegExecutableAsync();
+    Task<string?> PickLeagueClientAsync();
 }
 
 public sealed class SettingsPickerService(Func<Window?> owner) : ISettingsPickerService
@@ -31,12 +32,16 @@ public sealed class SettingsPickerService(Func<Window?> owner) : ISettingsPicker
         return (await picker.PickSingleFolderAsync())?.Path;
     }
 
-    public async Task<string?> PickFfmpegExecutableAsync()
+    public Task<string?> PickFfmpegExecutableAsync() => PickExecutableAsync("使用此程序");
+
+    public Task<string?> PickLeagueClientAsync() => PickExecutableAsync("选择 TCLS\\Client.exe");
+
+    private async Task<string?> PickExecutableAsync(string commitButtonText)
     {
         var picker = new Pickers.FileOpenPicker(OwnerId)
         {
             SuggestedStartLocation = Pickers.PickerLocationId.ComputerFolder,
-            CommitButtonText = "使用此程序"
+            CommitButtonText = commitButtonText
         };
         picker.FileTypeFilter.Add(".exe");
         return (await picker.PickSingleFileAsync())?.Path;

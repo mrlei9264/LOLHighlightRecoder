@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using LolHighlight.Recording.Infrastructure;
 using LolHighlight.Recording.Models;
 
@@ -9,6 +10,7 @@ public interface IRecordingSessionService : IDisposable
     event EventHandler<HighlightDetectedEventArgs>? HighlightDetected;
     RecordingSnapshot Snapshot { get; }
     bool IsRunning { get; }
+    (float GameAudio, float Microphone) ReadAudioPeaks() => default;
     Task StartAsync(CancellationToken cancellationToken = default);
     Task StopAsync();
 }
@@ -37,6 +39,8 @@ public sealed class RecordingSessionService : IRecordingSessionService
     private Task<string?>? _exportTask;
     private bool _capturingGameAudio;
     private bool _capturingMicrophone;
+    private int _gameAudioPeak;
+    private int _microphonePeak;
     private bool _disposed;
     private double _captureStartedAt;
     private PlayerIdentity? _activePlayer;
@@ -49,6 +53,7 @@ public sealed class RecordingSessionService : IRecordingSessionService
     private string? _warning;
     private string? _exportWarning;
     private string? _fullGamePath;
+    private readonly List<RecordingChapter> _fullGameChapters = new();
     private readonly MatchReviewStore? _review;
     private bool _apiUnavailable;
 
@@ -61,6 +66,10 @@ public sealed class RecordingSessionService : IRecordingSessionService
     }
 
     public bool IsRunning => _cts != null || _captureTarget != null || _pipeline.IsRunning;
+
+    public (float GameAudio, float Microphone) ReadAudioPeaks() =>
+        (BitConverter.Int32BitsToSingle(Interlocked.Exchange(ref _gameAudioPeak, 0)),
+         BitConverter.Int32BitsToSingle(Interlocked.Exchange(ref _microphonePeak, 0)));
 
     public RecordingSessionService(
         AppConfig config,
@@ -176,7 +185,7 @@ public sealed class RecordingSessionService : IRecordingSessionService
             _review?.CompleteMatch();
 
             if (!exportFailed)
-                SetStatus(RecordingStatus.Idle, "未启动", "点击启动监听开始下一场对局");
+                SetStatus(RecordingStatus.Idle, "未启动", "点击启动监听开始下一场对局", _warning);
         }
         finally
         {
@@ -193,7 +202,11 @@ public sealed class RecordingSessionService : IRecordingSessionService
         {
             try
             {
-                await _gameAudio.StartAsync(processId, data => _pipeline.WriteGameAudio(data));
+                await _gameAudio.StartAsync(processId, data =>
+                {
+                    MeasurePeak(data, ref _gameAudioPeak);
+                    _pipeline.WriteGameAudio(data);
+                });
                 gameAudio = _gameAudio.IsRunning;
             }
             catch (Exception exception)
@@ -207,7 +220,11 @@ public sealed class RecordingSessionService : IRecordingSessionService
         {
             try
             {
-                await _microphone.StartAsync(data => _pipeline.WriteMicrophone(data));
+                await _microphone.StartAsync(data =>
+                {
+                    MeasurePeak(data, ref _microphonePeak);
+                    _pipeline.WriteMicrophone(data);
+                });
                 microphone = _microphone.IsRunning;
             }
             catch (Exception exception)
@@ -347,13 +364,14 @@ public sealed class RecordingSessionService : IRecordingSessionService
         }
         _detectedPlayer = player;
         var gameTime = GetDouble(gameStats.GetValueOrDefault("gameTime"), -1);
+        var sampledAt = now + TimeSpan.FromTicks((DateTime.UtcNow - now).Ticks / 2);
 
         var target = _windows.FindLeagueWindow();
         if (target == null || currentEvents.Any(e => e.GetValueOrDefault("EventName")?.ToString() == "GameEnd"))
         {
             if (_telemetryStarted && fullData != null) _telemetry.CaptureAll(now, fullData);
             if (_activePlayer != null)
-                ProcessEvents(currentEvents, _activePlayer, now);
+                ProcessEvents(currentEvents, _activePlayer, now, sampledAt, gameTime);
             await EndCaptureAsync();
             _review?.CompleteMatch();
             SetStatus(RecordingStatus.WaitingForGame, "等待英雄联盟对局",
@@ -407,7 +425,7 @@ public sealed class RecordingSessionService : IRecordingSessionService
 
         // Retain the resolved team across polls; activeplayer does not include it.
         player = _activePlayer ?? player;
-        ProcessEvents(currentEvents, player, now);
+        ProcessEvents(currentEvents, player, now, sampledAt, gameTime);
 
         if (now >= _nextTelemetryAt && _telemetryStarted)
         {
@@ -422,8 +440,12 @@ public sealed class RecordingSessionService : IRecordingSessionService
         }
     }
 
-    private void ProcessEvents(List<Dictionary<string, object>> events, PlayerIdentity player, DateTime now)
+    private void ProcessEvents(List<Dictionary<string, object>> events, PlayerIdentity player, DateTime now, DateTime sampledAt, double gameTime)
     {
+        // Align EventTime on Riot's game clock to the same session clock as the encoded frames.
+        double? gameTimeOffset = double.IsFinite(gameTime) && gameTime >= 0 && _clock.IsRunning
+            ? (sampledAt - _clock.StartedAtUtc).TotalSeconds - gameTime : null;
+        var fullGame = _config.RecordingMode == "full_game";
         foreach (var evt in events.OrderBy(GetEventId))
         {
             var eventId = GetEventId(evt);
@@ -437,9 +459,14 @@ public sealed class RecordingSessionService : IRecordingSessionService
 
             var trigger = _evaluator.Evaluate(evt, player, now);
             if (trigger == null) continue;
-            var fullGame = _config.RecordingMode == "full_game";
+            var eventTime = GetDouble(evt.GetValueOrDefault("EventTime"), -1);
+            if (gameTimeOffset is { } offset && double.IsFinite(eventTime) && eventTime >= 0 && offset + eventTime >= 0)
+                trigger = trigger with { RecordingSeconds = offset + eventTime };
+
             if (!fullGame && !_config.RecordingEvents.Contains(trigger.Kind)) continue;
             if (!fullGame) _clipCoordinator.Trigger(trigger, player);
+            else if (_fullGamePath != null)
+                _fullGameChapters.Add(new RecordingChapter(trigger.RecordingSeconds ?? _clock.ToSessionSeconds(trigger.DetectedAt), trigger.Kind));
             if (_config.ShowEventNotifications)
             {
                 // UI subscribers must never interrupt event detection or the encoded stream.
@@ -468,7 +495,7 @@ public sealed class RecordingSessionService : IRecordingSessionService
         if (pending == null) return;
         try
         {
-            if (await pending != null) _exportWarning = null;
+            if (await pending != null) ReportExportWarning(_clipCoordinator.LastExportWarning);
         }
         catch (Exception error)
         {
@@ -481,17 +508,29 @@ public sealed class RecordingSessionService : IRecordingSessionService
     {
         if (_config.RecordingMode == "full_game") return null;
         string? last = null;
+        string? warning = null;
         do
         {
-            last = await _clipCoordinator.TickAsync(_clock.NowSeconds, force: true) ?? last;
+            if (await _clipCoordinator.TickAsync(_clock.NowSeconds, force: true) is { } exported)
+            {
+                last = exported;
+                warning ??= _clipCoordinator.LastExportWarning;
+            }
         } while (_clipCoordinator.ActiveWindow != null);
         if (last != null)
         {
-            _exportWarning = null;
+            ReportExportWarning(warning);
             if (_warning?.StartsWith("高光导出失败") == true || _warning?.StartsWith("最后片段") == true)
                 _warning = null;
         }
         return last;
+    }
+
+    private void ReportExportWarning(string? warning)
+    {
+        _exportWarning = warning;
+        if (warning != null)
+            RuntimeDiagnostics.Write(_paths.ResolveRuntimeDirectory(_config.RuntimeDir), warning);
     }
 
     private async Task BeginCaptureAsync(GameCaptureTarget target, CancellationToken cancellationToken)
@@ -499,6 +538,7 @@ public sealed class RecordingSessionService : IRecordingSessionService
         _review?.BeginMatch();
         _warning = null;
         _ringBuffer.Clear();
+        _fullGameChapters.Clear();
         _clock.Start();
         var runtimeDirectory = _paths.ResolveRuntimeDirectory(_config.RuntimeDir);
         _sessionDirectory = Path.Combine(runtimeDirectory, $"session_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{Guid.NewGuid():N}");
@@ -526,6 +566,8 @@ public sealed class RecordingSessionService : IRecordingSessionService
         try { _microphone.Stop(); } catch (Exception error) { _warning = error.Message; }
         _capturingGameAudio = false;
         _capturingMicrophone = false;
+        Interlocked.Exchange(ref _gameAudioPeak, 0);
+        Interlocked.Exchange(ref _microphonePeak, 0);
         try { await _pipeline.StopAsync(); } catch (Exception error) { _warning = error.Message; }
         _captureTarget = null;
         var fullGame = _fullGamePath;
@@ -533,6 +575,12 @@ public sealed class RecordingSessionService : IRecordingSessionService
         if (fullGame != null && File.Exists(fullGame + ".part.mp4"))
         {
             var pending = fullGame + ".part.mp4";
+            if (_pipeline.VideoStartSeconds is { } videoStart &&
+                VideoChapters.CreateMetadata(_fullGameChapters, videoStart, _ringBuffer.LatestTimestamp) is { } chapters)
+            {
+                try { await VideoChapters.AddToFullRecordingAsync(pending, chapters, _config); }
+                catch (Exception error) { AppendWarning($"整局录像章节写入失败，已保留原视频：{error.Message}"); }
+            }
             try
             {
                 if (_config.EmbedTelemetryFooter)
@@ -542,7 +590,7 @@ public sealed class RecordingSessionService : IRecordingSessionService
                     if (_telemetry.Path is { } path)
                     {
                         archive = await TelemetryArchive.AppendAsync(pending, new(path, _clock.StartedAtUtc, DateTime.UtcNow),
-                            reserveBytes: incoming => new StorageQuotaManager().EnsurePendingAppendRoom(pending, fullGame,
+                            reserveBytes: incoming => new StorageQuotaManager(_paths).EnsurePendingAppendRoom(pending, fullGame,
                                 _config.DiskQuotaGb, _config.MinimumFreeGb, incoming));
                     }
                     new MetadataFooterService().AppendMetadataFooter(pending, new Dictionary<string, object>
@@ -565,15 +613,16 @@ public sealed class RecordingSessionService : IRecordingSessionService
             }
             catch (Exception error)
             {
-                _warning = $"整局视频已保存，附加对局数据失败；原始数据保留在会话目录：{error.Message}";
+                AppendWarning($"整局视频已保存，附加对局数据失败；原始数据保留在会话目录：{error.Message}");
             }
             try
             {
                 File.Move(pending, fullGame);
-                new StorageQuotaManager().Enforce(Path.GetDirectoryName(fullGame)!, _config.DiskQuotaGb, _config.MinimumFreeGb, fullGame);
+                new StorageQuotaManager(_paths).Enforce(Path.GetDirectoryName(fullGame)!, _config.DiskQuotaGb, _config.MinimumFreeGb, fullGame);
             }
             catch (Exception error) { _warning = $"整局录像保留在 {pending}，完成保存失败：{error.Message}"; }
         }
+        _fullGameChapters.Clear();
     }
 
     private async Task EndCaptureAsync()
@@ -642,24 +691,25 @@ public sealed class RecordingSessionService : IRecordingSessionService
 
     private void UpdateBufferedStatus()
     {
-        var current = Snapshot;
-        if (current.Status is not (RecordingStatus.Recording or RecordingStatus.WaitingForGame or RecordingStatus.Paused or RecordingStatus.Retrying))
-            return;
-
         lock (_stateLock)
         {
-            _snapshot = current with
+            var current = _snapshot;
+            if (current.Status is not (RecordingStatus.Recording or RecordingStatus.WaitingForGame or RecordingStatus.Paused or RecordingStatus.Retrying))
+                return;
+            _snapshot = WithCaptureState(current with
             {
                 BufferedSeconds = _ringBuffer.BufferedSeconds,
                 LastError = current.Status == RecordingStatus.Retrying ? current.LastError : ForDisplay(_exportWarning ?? _warning, 1500)
-            };
+            });
         }
         StatusChanged?.Invoke(this, new RecordingStatusChangedEventArgs(Snapshot));
     }
 
     private void SetStatus(RecordingStatus status, string title, string? detail, string? error = null)
     {
-        error = _exportWarning ?? error;
+        error = status is RecordingStatus.Error or RecordingStatus.Retrying
+            ? error ?? _exportWarning
+            : _exportWarning ?? error;
         var diagnosticError = error;
         var diagnosticDetail = detail;
         detail = ForDisplay(detail, 700);
@@ -668,13 +718,13 @@ public sealed class RecordingSessionService : IRecordingSessionService
         lock (_stateLock)
         {
             changed = _snapshot.Status != status || _snapshot.Title != title || _snapshot.Detail != (detail ?? string.Empty) || _snapshot.LastError != error;
-            _snapshot = new RecordingSnapshot(
+            _snapshot = WithCaptureState(new RecordingSnapshot(
                 status,
                 title,
                 detail ?? string.Empty,
                 _ringBuffer.BufferedSeconds,
                 error,
-                _activePlayer ?? _detectedPlayer);
+                _activePlayer ?? _detectedPlayer));
         }
         if (changed)
         {
@@ -682,6 +732,34 @@ public sealed class RecordingSessionService : IRecordingSessionService
                 $"[{status}] {title} | {diagnosticDetail} | {diagnosticError}");
         }
         StatusChanged?.Invoke(this, new RecordingStatusChangedEventArgs(Snapshot));
+    }
+
+    private RecordingSnapshot WithCaptureState(RecordingSnapshot snapshot)
+    {
+        var capturing = _captureTarget != null;
+        return snapshot with
+        {
+            IsCapturingVideo = capturing,
+            CaptureStartedAtUtc = capturing ? _clock.StartedAtUtc.AddSeconds(_pipeline.VideoStartSeconds ?? 0) : null,
+            IsCapturingGameAudio = capturing && _capturingGameAudio && _gameAudio.IsRunning,
+            IsCapturingMicrophone = capturing && _capturingMicrophone && _microphone.IsRunning
+        };
+    }
+
+    private static void MeasurePeak(byte[] pcm, ref int meter)
+    {
+        // Both capture callbacks deliver normalized float32 PCM. Positive float bits sort like the amplitudes.
+        var peak = 0f;
+        foreach (var sample in MemoryMarshal.Cast<byte, float>(pcm.AsSpan()))
+            if (float.IsFinite(sample)) peak = Math.Max(peak, Math.Abs(sample));
+        var bits = BitConverter.SingleToInt32Bits(Math.Min(peak, 1));
+        var current = Volatile.Read(ref meter);
+        while (bits > current)
+        {
+            var previous = Interlocked.CompareExchange(ref meter, bits, current);
+            if (previous == current) break;
+            current = previous;
+        }
     }
 
     private int MaxBufferSeconds()

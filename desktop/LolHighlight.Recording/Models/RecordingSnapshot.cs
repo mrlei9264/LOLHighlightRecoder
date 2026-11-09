@@ -19,7 +19,13 @@ public sealed record RecordingSnapshot(
     string Detail,
     double BufferedSeconds,
     string? LastError,
-    PlayerIdentity? Player);
+    PlayerIdentity? Player)
+{
+    public bool IsCapturingVideo { get; init; }
+    public DateTime? CaptureStartedAtUtc { get; init; }
+    public bool IsCapturingGameAudio { get; init; }
+    public bool IsCapturingMicrophone { get; init; }
+}
 
 public sealed class RecordingStatusChangedEventArgs : EventArgs
 {

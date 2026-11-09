@@ -27,6 +27,7 @@ public class SettingsViewModel : INotifyPropertyChanged, IDisposable
     private bool _wasListening;
     private string _recordingMode = "highlights";
     private bool _reviewAfterMatch = true;
+    private bool _deleteToRecycleBin = true;
     private bool _showEventNotifications = true;
     private string _eventNotificationStyle = EventNotificationStyles.Default;
     private double _telemetryInterval = 0.1;
@@ -80,6 +81,7 @@ public class SettingsViewModel : INotifyPropertyChanged, IDisposable
         .Select(kind => new RecordingEventChoice(kind.Id, kind.Label)).ToArray();
     public string RecordingMode { get => _recordingMode; set => SetField(ref _recordingMode, value); }
     public bool ReviewAfterMatch { get => _reviewAfterMatch; set => SetField(ref _reviewAfterMatch, value); }
+    public bool DeleteToRecycleBin { get => _deleteToRecycleBin; set => SetField(ref _deleteToRecycleBin, value); }
     public bool IsHighlightMode => RecordingMode == "highlights";
     public bool ShowEventNotifications { get => _showEventNotifications; set => SetField(ref _showEventNotifications, value); }
     public IReadOnlyList<EventNotificationStyleChoice> EventNotificationStyleOptions => EventNotificationStyles.All;
@@ -362,6 +364,7 @@ public class SettingsViewModel : INotifyPropertyChanged, IDisposable
             candidate.CaptureMode = CaptureMode;
             candidate.RecordingMode = RecordingMode;
             candidate.ReviewAfterMatch = ReviewAfterMatch;
+            candidate.DeleteToRecycleBin = DeleteToRecycleBin;
             candidate.RecordingEvents = RecordingEvents.Where(choice => choice.IsSelected).Select(choice => choice.Id).ToArray();
             candidate.ShowEventNotifications = ShowEventNotifications;
             candidate.EventNotificationStyle = EventNotificationStyle;
@@ -406,6 +409,7 @@ public class SettingsViewModel : INotifyPropertyChanged, IDisposable
         CaptureMode = defaults.CaptureMode;
         RecordingMode = defaults.RecordingMode;
         ReviewAfterMatch = defaults.ReviewAfterMatch;
+        DeleteToRecycleBin = defaults.DeleteToRecycleBin;
         ShowEventNotifications = defaults.ShowEventNotifications;
         EventNotificationStyle = defaults.EventNotificationStyle;
         TelemetryInterval = defaults.TelemetryIntervalSeconds;
@@ -501,6 +505,7 @@ public class SettingsViewModel : INotifyPropertyChanged, IDisposable
         CaptureMode,
         RecordingMode,
         ReviewAfterMatch,
+        DeleteToRecycleBin,
         ShowEventNotifications,
         EventNotificationStyle,
         TelemetryInterval,
@@ -547,6 +552,7 @@ public class SettingsViewModel : INotifyPropertyChanged, IDisposable
         CaptureMode = settings.CaptureMode;
         RecordingMode = settings.RecordingMode;
         ReviewAfterMatch = settings.ReviewAfterMatch;
+        DeleteToRecycleBin = settings.DeleteToRecycleBin;
         ShowEventNotifications = settings.ShowEventNotifications;
         EventNotificationStyle = settings.EventNotificationStyle;
         TelemetryInterval = settings.TelemetryIntervalSeconds;

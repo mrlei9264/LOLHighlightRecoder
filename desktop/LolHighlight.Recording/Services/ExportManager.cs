@@ -8,6 +8,7 @@ public interface IExportManager
 {
     // The complete GOPs actually committed can extend beyond the requested end.
     double? LastExportedEnd => null;
+    string? LastExportWarning => null;
     Task<string> ExportAsync(
         double startTime,
         double endTime,
@@ -19,6 +20,7 @@ public interface IExportManager
 public sealed class ExportManager : IExportManager
 {
     public double? LastExportedEnd { get; private set; }
+    public string? LastExportWarning { get; private set; }
     private readonly IMemoryRingBuffer _ringBuffer;
     private readonly IMetadataFooterService _metadataFooter;
     private readonly IStorageQuotaManager _quotaManager;
@@ -43,6 +45,7 @@ public sealed class ExportManager : IExportManager
         Dictionary<string, object>? metadata = null,
         CancellationToken cancellationToken = default)
     {
+        LastExportWarning = null;
         if (!double.IsFinite(startTime) || !double.IsFinite(endTime) || endTime <= startTime)
             throw new ArgumentException("Export end time must be after start time");
 
@@ -65,10 +68,10 @@ public sealed class ExportManager : IExportManager
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        var expectedBytes = checked((long)(segments.Sum(segment => (long)segment.Data.Length) * 1.05) + 1024 * 1024 +
-            (metadata != null && _config.EmbedTelemetryFooter ? MetadataFooterService.MaxMetadataBytes : 0));
+        var expectedBytes = checked((long)(segments.Sum(segment => (long)segment.Data.Length) * 1.05) + 1024 * 1024);
         _quotaManager.EnsureRoom(outputDirectory, _config.DiskQuotaGb, _config.MinimumFreeGb, outputPath, expectedBytes);
 
+        string? chapterMetadata = null;
         if (metadata != null)
         {
             metadata = new Dictionary<string, object>(metadata)
@@ -81,31 +84,59 @@ public sealed class ExportManager : IExportManager
                 },
                 ["partial_buffer"] = segments[0].TimestampStart > startTime + 0.25
             };
+            if (metadata.Remove(VideoChapters.ExportMetadataKey, out var events) && events is RecordingChapter[] chapters)
+                chapterMetadata = VideoChapters.CreateMetadata(chapters, segments[0].TimestampStart, segments[^1].TimestampEnd);
         }
 
         var partialPath = outputPath + ".part.mp4";
+        var chapterPath = chapterMetadata == null ? null : $"{outputPath}.{Guid.NewGuid():N}.ffmeta";
+        var preservePartial = false;
 
         try
         {
-            await RemuxToMp4Async(segments, partialPath, cancellationToken);
-            if (!File.Exists(partialPath) || new FileInfo(partialPath).Length == 0)
+            if (chapterPath != null)
+                await File.WriteAllTextAsync(chapterPath, chapterMetadata!, cancellationToken);
+            await RemuxToMp4Async(segments, partialPath, chapterPath, cancellationToken);
+            var video = new FileInfo(partialPath);
+            if (!video.Exists || video.Length == 0)
                 throw new IOException("FFmpeg did not produce a video file");
 
             if (metadata != null && _config.EmbedTelemetryFooter)
             {
-                if (metadata.Remove("_telemetry_archive", out var archive) && archive is TelemetryArchiveRequest request)
+                var videoLength = video.Length;
+                try
                 {
-                    var actualWindow = request with
+                    if (metadata.Remove("_telemetry_archive", out var archive) && archive is TelemetryArchiveRequest request)
                     {
-                        Start = request.Start.AddSeconds(segments[0].TimestampStart - startTime),
-                        End = request.End.AddSeconds(segments[^1].TimestampEnd - endTime)
-                    };
-                    var result = await TelemetryArchive.AppendAsync(partialPath, actualWindow, cancellationToken,
-                        incoming => new StorageQuotaManager().EnsurePendingAppendRoom(partialPath, outputPath,
-                            _config.DiskQuotaGb, _config.MinimumFreeGb, incoming));
-                    metadata["telemetry_archive"] = new { format = "gzip-ndjson-uuid-v1", result.Chunks, result.Records, result.Bytes };
+                        var actualWindow = request with
+                        {
+                            Start = request.Start.AddSeconds(segments[0].TimestampStart - startTime),
+                            End = request.End.AddSeconds(segments[^1].TimestampEnd - endTime)
+                        };
+                        var result = await TelemetryArchive.AppendAsync(partialPath, actualWindow, cancellationToken,
+                            incoming => (_quotaManager as StorageQuotaManager ?? new StorageQuotaManager()).EnsurePendingAppendRoom(partialPath, outputPath,
+                                _config.DiskQuotaGb, _config.MinimumFreeGb, incoming));
+                        metadata["telemetry_archive"] = new { format = "gzip-ndjson-uuid-v1", result.Chunks, result.Records, result.Bytes };
+                    }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    _metadataFooter.AppendMetadataFooter(partialPath, metadata);
                 }
-                _metadataFooter.AppendMetadataFooter(partialPath, metadata);
+                catch (Exception error) when (error is not OperationCanceledException)
+                {
+                    // Both metadata writers only append. Remove any incomplete boxes before publishing the video.
+                    try
+                    {
+                        using var stream = File.Open(partialPath, FileMode.Open, FileAccess.Write, FileShare.Read);
+                        if (stream.Length < videoLength) throw new IOException("视频文件意外缩短");
+                        if (stream.Length > videoLength) stream.SetLength(videoLength);
+                    }
+                    catch (Exception rollbackError) when (rollbackError is IOException or UnauthorizedAccessException)
+                    {
+                        preservePartial = true;
+                        throw new IOException($"无法恢复录像到写入对局数据前的状态，已保留文件：{partialPath}", rollbackError);
+                    }
+                    LastExportWarning = $"高光录像已保存，对局数据写入失败：{error.Message}";
+                }
             }
 
             File.Move(partialPath, outputPath, overwrite: false);
@@ -117,13 +148,16 @@ public sealed class ExportManager : IExportManager
         }
         finally
         {
-            try { File.Delete(partialPath); } catch { }
+            if (!preservePartial)
+                try { File.Delete(partialPath); } catch { }
+            if (chapterPath != null) VideoChapters.DeleteTemporary(chapterPath);
         }
     }
 
     private async Task RemuxToMp4Async(
         IReadOnlyList<MemorySegment> segments,
         string outputPath,
+        string? chapterPath,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -140,9 +174,15 @@ public sealed class ExportManager : IExportManager
         foreach (var argument in new[]
         {
             "-hide_banner", "-loglevel", "warning", "-y",
-            "-fflags", "+genpts", "-f", "mpegts", "-i", "pipe:0",
-            "-map", "0", "-c", "copy", "-movflags", "+faststart", outputPath
+            "-fflags", "+genpts", "-f", "mpegts", "-i", "pipe:0"
         })
+            startInfo.ArgumentList.Add(argument);
+        if (chapterPath != null)
+        {
+            foreach (var argument in new[] { "-f", "ffmetadata", "-i", chapterPath, "-map_chapters", "1" })
+                startInfo.ArgumentList.Add(argument);
+        }
+        foreach (var argument in new[] { "-map", "0", "-c", "copy", "-movflags", "+faststart", outputPath })
             startInfo.ArgumentList.Add(argument);
 
         using var process = Process.Start(startInfo)
